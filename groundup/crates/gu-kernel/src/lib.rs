@@ -116,6 +116,7 @@ pub enum Query {
     Lifted(u64),
     Ssa(u64),
     OptSsa(u64),
+    Decompile(u64),
     /// The name an address should display as: model override, else symbol.
     /// A query of its own so that redundant model edits get early-cutoff.
     DisplayName(u64),
@@ -130,6 +131,7 @@ impl fmt::Display for Query {
             Query::Lifted(a) => write!(f, "lifted({a:#x})"),
             Query::Ssa(a) => write!(f, "ssa({a:#x})"),
             Query::OptSsa(a) => write!(f, "opt_ssa({a:#x})"),
+            Query::Decompile(a) => write!(f, "decompile({a:#x})"),
             Query::DisplayName(a) => write!(f, "display_name({a:#x})"),
             Query::Listing(a) => write!(f, "listing({a:#x})"),
         }
@@ -159,6 +161,7 @@ enum Output {
     Ssa(SsaProgram),
     Name(Option<String>),
     Listing(String),
+    Decompiled(String),
 }
 
 struct Memo {
@@ -410,6 +413,16 @@ impl Kernel {
                 let ssa = self.ssa(entry)?;
                 Ok(Output::Ssa(gu_ssa::optimize(&ssa)))
             }
+            Query::Decompile(entry) => {
+                let opt = self.opt_ssa(entry)?;
+                // Resolve call targets to symbol/discovered names. Using
+                // functions() (not model overrides) keeps decompilation
+                // byte-dependent, so it caches across renames.
+                let names: std::collections::HashMap<u64, String> =
+                    self.functions()?.into_iter().map(|f| (f.entry, f.name)).collect();
+                let text = gu_decompile::decompile(&opt, &|a| names.get(&a).cloned());
+                Ok(Output::Decompiled(text))
+            }
             Query::Listing(entry) => Ok(Output::Listing(self.compute_listing(entry)?)),
         }
     }
@@ -493,6 +506,13 @@ impl Kernel {
         match self.get(&Query::OptSsa(entry))? {
             Output::Ssa(v) => Ok(v),
             _ => panic!("opt_ssa() produced wrong output kind"),
+        }
+    }
+
+    pub fn decompile(&mut self, entry: u64) -> Result<String> {
+        match self.get(&Query::Decompile(entry))? {
+            Output::Decompiled(v) => Ok(v),
+            _ => panic!("decompile() produced wrong output kind"),
         }
     }
 

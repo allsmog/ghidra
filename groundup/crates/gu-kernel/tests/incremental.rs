@@ -156,6 +156,25 @@ fn ssa_queries_ride_the_incremental_engine() {
 }
 
 #[test]
+fn decompile_query_produces_structured_code() {
+    let (mut k, sum, _, _) = kernel();
+    let c = k.decompile(sum).unwrap();
+    // The counted loop decompiles to a while with both updates.
+    assert!(c.contains("while"), "expected a loop:\n{c}");
+    assert!(c.contains("return t0"), "expected return:\n{c}");
+
+    // Decompilation rides the incremental engine and depends only on bytes.
+    k.take_log();
+    k.set_function_name(sum, "sum");
+    k.decompile(sum).unwrap();
+    let log = k.take_log();
+    assert!(
+        log.contains(&format!("cached   decompile({sum:#x})")),
+        "decompilation must be reused across renames, got: {log:?}"
+    );
+}
+
+#[test]
 fn model_round_trips_as_text() {
     let (mut k, sum, entry, _) = kernel();
     k.set_function_name(sum, "sum");

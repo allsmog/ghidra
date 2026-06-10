@@ -1,0 +1,169 @@
+//! Renders the structured high-level IR as C-like pseudocode.
+
+use crate::hir::{HExpr, HStmt};
+use gu_ir::{BinOp, CmpOp, UnOp};
+use std::collections::HashSet;
+use std::fmt::Write as _;
+
+pub fn emit(name: &str, entry: u64, body: &[HStmt]) -> String {
+    let mut targeted = HashSet::new();
+    collect_goto_targets(body, &mut targeted);
+
+    let mut out = String::new();
+    let _ = writeln!(out, "// {name} @ {entry:#x}");
+    let _ = writeln!(out, "long {name}() {{");
+    emit_block(body, 1, &targeted, &mut out);
+    let _ = writeln!(out, "}}");
+    out
+}
+
+fn collect_goto_targets(stmts: &[HStmt], out: &mut HashSet<u64>) {
+    for s in stmts {
+        match s {
+            HStmt::Goto(t) => {
+                out.insert(*t);
+            }
+            HStmt::If { then_body, else_body, .. } => {
+                collect_goto_targets(then_body, out);
+                collect_goto_targets(else_body, out);
+            }
+            HStmt::While { body, .. } => collect_goto_targets(body, out),
+            _ => {}
+        }
+    }
+}
+
+fn indent(level: usize) -> String {
+    "    ".repeat(level)
+}
+
+fn emit_block(stmts: &[HStmt], level: usize, targeted: &HashSet<u64>, out: &mut String) {
+    let pad = indent(level);
+    for s in stmts {
+        match s {
+            HStmt::Label(addr) => {
+                if targeted.contains(addr) {
+                    // Labels sit one indent out, like C.
+                    let _ = writeln!(out, "{}loc_{addr:x}:", indent(level.saturating_sub(1)));
+                }
+            }
+            HStmt::Assign(var, e) => {
+                let _ = writeln!(out, "{pad}{var} = {};", fmt_expr(e));
+            }
+            HStmt::Store { addr, val, size } => {
+                let _ = writeln!(
+                    out,
+                    "{pad}*({}*)({}) = {};",
+                    c_type(*size),
+                    fmt_expr(addr),
+                    fmt_expr(val)
+                );
+            }
+            HStmt::Call { name } => {
+                let _ = writeln!(out, "{pad}{name}();");
+            }
+            HStmt::CallIndirect(e) => {
+                let _ = writeln!(out, "{pad}(*{})();", fmt_expr(e));
+            }
+            HStmt::SysCall => {
+                let _ = writeln!(out, "{pad}syscall();");
+            }
+            HStmt::Return(Some(e)) => {
+                let _ = writeln!(out, "{pad}return {};", fmt_expr(e));
+            }
+            HStmt::Return(None) => {
+                let _ = writeln!(out, "{pad}return;");
+            }
+            HStmt::IndirectJump(e) => {
+                let _ = writeln!(out, "{pad}goto *{};", fmt_expr(e));
+            }
+            HStmt::Goto(t) => {
+                let _ = writeln!(out, "{pad}goto loc_{t:x};");
+            }
+            HStmt::Break => {
+                let _ = writeln!(out, "{pad}break;");
+            }
+            HStmt::Continue => {
+                let _ = writeln!(out, "{pad}continue;");
+            }
+            HStmt::If { cond, then_body, else_body } => {
+                let _ = writeln!(out, "{pad}if ({}) {{", fmt_expr(cond));
+                emit_block(then_body, level + 1, targeted, out);
+                if !else_body.is_empty() {
+                    let _ = writeln!(out, "{pad}}} else {{");
+                    emit_block(else_body, level + 1, targeted, out);
+                }
+                let _ = writeln!(out, "{pad}}}");
+            }
+            HStmt::While { cond, body } => {
+                let _ = writeln!(out, "{pad}while ({}) {{", fmt_expr(cond));
+                emit_block(body, level + 1, targeted, out);
+                let _ = writeln!(out, "{pad}}}");
+            }
+        }
+    }
+}
+
+fn c_type(size: u8) -> &'static str {
+    match size {
+        1 => "int8_t",
+        2 => "int16_t",
+        4 => "int32_t",
+        _ => "int64_t",
+    }
+}
+
+fn fmt_expr(e: &HExpr) -> String {
+    match e {
+        HExpr::Const(i) => {
+            if (-9..=9).contains(i) {
+                format!("{i}")
+            } else if *i < 0 {
+                format!("-{:#x}", (*i as i128).unsigned_abs())
+            } else {
+                format!("{i:#x}")
+            }
+        }
+        HExpr::Var(name) => name.clone(),
+        HExpr::Bin(op, a, b) => {
+            format!("({} {} {})", fmt_expr(a), bin_sym(*op), fmt_expr(b))
+        }
+        HExpr::Cmp(op, a, b) => {
+            format!("{} {} {}", fmt_expr(a), cmp_sym(*op), fmt_expr(b))
+        }
+        HExpr::Un(UnOp::Sext32, v) => format!("(int32_t){}", fmt_expr(v)),
+        HExpr::Un(UnOp::Zext32, v) => format!("(uint32_t){}", fmt_expr(v)),
+        HExpr::Load { addr, size, signed } => {
+            let ty = if *signed { c_type(*size) } else { c_utype(*size) };
+            format!("*({ty}*)({})", fmt_expr(addr))
+        }
+    }
+}
+
+fn c_utype(size: u8) -> &'static str {
+    match size {
+        1 => "uint8_t",
+        2 => "uint16_t",
+        4 => "uint32_t",
+        _ => "uint64_t",
+    }
+}
+
+fn bin_sym(op: BinOp) -> &'static str {
+    use BinOp::*;
+    match op {
+        Add => "+", Sub => "-", And => "&", Or => "|", Xor => "^",
+        Shl => "<<", Shr => ">>", Sar => ">>",
+        SltS | SltU => "<",
+        Mul => "*", MulHS | MulHU | MulHSU => "*hi",
+        DivS | DivU => "/", RemS | RemU => "%",
+    }
+}
+
+fn cmp_sym(op: CmpOp) -> &'static str {
+    match op {
+        CmpOp::Eq => "==", CmpOp::Ne => "!=",
+        CmpOp::LtS | CmpOp::LtU => "<",
+        CmpOp::GeS | CmpOp::GeU => ">=",
+    }
+}

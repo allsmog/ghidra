@@ -18,6 +18,7 @@ commands:
   ssa      build SSA form (phi nodes at control-flow merges)
   opt      optimize SSA (constant propagation, folding, dead-code
            elimination) and show node counts before/after
+  decompile  recover structured pseudo-C from the optimized SSA
   demo     show incremental recomputation: warm the cache, rename a
            function, and watch what does (and does not) recompute
 ";
@@ -73,6 +74,11 @@ fn run(cmd: &str, data: Vec<u8>, func: Option<&str>) -> Result<(), Box<dyn std::
             let opt = k.opt_ssa(entry)?;
             print!("{}", opt.render(&Rv64Namer));
             println!("  ; nodes: {before} -> {} after optimization\n", opt.node_count());
+            Ok(())
+        }),
+        "decompile" => with_functions(data, func, |k, entry| {
+            print!("{}", k.decompile(entry)?);
+            println!();
             Ok(())
         }),
         "demo" => demo(data),

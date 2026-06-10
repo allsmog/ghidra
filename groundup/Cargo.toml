@@ -5,6 +5,7 @@ members = [
     "crates/gu-ir",
     "crates/gu-rv64",
     "crates/gu-ssa",
+    "crates/gu-decompile",
     "crates/gu-kernel",
     "crates/gu-cli",
 ]

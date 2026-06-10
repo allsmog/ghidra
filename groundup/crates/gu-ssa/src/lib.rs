@@ -13,7 +13,7 @@
 #![forbid(unsafe_code)]
 
 mod build;
-mod dom;
+pub mod dom;
 mod opt;
 
 pub use build::build;
