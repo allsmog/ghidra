@@ -148,15 +148,16 @@ impl Uses {
 }
 
 /// Lowers every block: expression propagation within the block, out-of-SSA
-/// naming, and terminator extraction.
+/// naming, stack-slot rewriting, and terminator extraction.
 pub fn lower_blocks(
     prog: &SsaProgram,
+    stack: &crate::vars::StackMap,
     name_of: &dyn Fn(u64) -> Option<String>,
 ) -> HashMap<u64, LowBlock> {
     let uses = global_uses(prog);
     prog.blocks
         .iter()
-        .map(|b| (b.start, lower_block(b, &uses, name_of)))
+        .map(|b| (b.start, lower_block(b, &uses, stack, name_of)))
         .collect()
 }
 
@@ -221,13 +222,14 @@ fn var_name(v: SsaVal) -> Option<String> {
     }
 }
 
-struct Lowerer {
+struct Lowerer<'a> {
     /// Inlinable definitions in this block: key -> its expression. A key is
     /// present only if it is pure and used exactly once in the function.
     inlinable: HashMap<Key, HExpr>,
+    stack: &'a crate::vars::StackMap,
 }
 
-impl Lowerer {
+impl Lowerer<'_> {
     fn val(&self, v: SsaVal) -> HExpr {
         match v {
             SsaVal::Imm(i) => HExpr::Const(i),
@@ -247,11 +249,17 @@ impl Lowerer {
             SsaExpr::Val(v) => self.val(*v),
             SsaExpr::Bin(op, a, b) => HExpr::bin(*op, self.val(*a), self.val(*b)),
             SsaExpr::Un(op, v) => HExpr::Un(*op, Box::new(self.val(*v))),
-            SsaExpr::Load { addr, size, signed } => HExpr::Load {
-                addr: Box::new(self.val(*addr)),
-                size: *size,
-                signed: *signed,
-            },
+            SsaExpr::Load { addr, size, signed } => {
+                // A load from a recovered stack slot reads the local directly.
+                if let Some(off) = crate::vars::slot_of(self.stack, *addr) {
+                    return HExpr::Var(crate::vars::local_name(off));
+                }
+                HExpr::Load {
+                    addr: Box::new(self.val(*addr)),
+                    size: *size,
+                    signed: *signed,
+                }
+            }
         }
     }
 
@@ -265,9 +273,10 @@ impl Lowerer {
 fn lower_block(
     block: &SsaBlock,
     uses: &Uses,
+    stack: &crate::vars::StackMap,
     name_of: &dyn Fn(u64) -> Option<String>,
 ) -> LowBlock {
-    let mut low = Lowerer { inlinable: HashMap::new() };
+    let mut low = Lowerer { inlinable: HashMap::new(), stack };
     let mut body = Vec::new();
     let stmts = &block.stmts;
     let n = stmts.len();
@@ -284,6 +293,11 @@ fn lower_block(
         }
         match stmt {
             SsaStmt::Assign { dst, expr } => {
+                // Stack-pointer bookkeeping (prologue/epilogue) is frame
+                // management, not program logic — don't emit it.
+                if matches!(dst, SsaVal::Reg(2, _)) {
+                    continue;
+                }
                 let he = low.expr(expr);
                 let key = dst.key();
                 let inlinable = key.is_some_and(|k| uses.inlinable(k, block.start));
@@ -295,11 +309,18 @@ fn lower_block(
                     body.push(HStmt::Assign(name, he));
                 }
             }
-            SsaStmt::Store { addr, val, size } => body.push(HStmt::Store {
-                addr: low.val(*addr),
-                val: low.val(*val),
-                size: *size,
-            }),
+            SsaStmt::Store { addr, val, size } => {
+                // A store to a recovered stack slot writes the local.
+                if let Some(off) = crate::vars::slot_of(stack, *addr) {
+                    body.push(HStmt::Assign(crate::vars::local_name(off), low.val(*val)));
+                } else {
+                    body.push(HStmt::Store {
+                        addr: low.val(*addr),
+                        val: low.val(*val),
+                        size: *size,
+                    });
+                }
+            }
             SsaStmt::Call { target, .. } => {
                 let name = name_of(*target).unwrap_or_else(|| format!("fn_{target:x}"));
                 body.push(HStmt::Call { name });

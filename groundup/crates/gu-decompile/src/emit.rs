@@ -1,17 +1,30 @@
 //! Renders the structured high-level IR as C-like pseudocode.
 
 use crate::hir::{HExpr, HStmt};
+use crate::vars::Signature;
 use gu_ir::{BinOp, CmpOp, UnOp};
 use std::collections::HashSet;
 use std::fmt::Write as _;
 
-pub fn emit(name: &str, entry: u64, body: &[HStmt]) -> String {
+pub fn emit(
+    name: &str,
+    entry: u64,
+    sig: &Signature,
+    locals: &[String],
+    body: &[HStmt],
+) -> String {
     let mut targeted = HashSet::new();
     collect_goto_targets(body, &mut targeted);
 
+    let params: Vec<String> = sig.params.iter().map(|p| format!("long {p}")).collect();
+    let param_list = if params.is_empty() { "void".to_string() } else { params.join(", ") };
+
     let mut out = String::new();
     let _ = writeln!(out, "// {name} @ {entry:#x}");
-    let _ = writeln!(out, "long {name}() {{");
+    let _ = writeln!(out, "{} {name}({param_list}) {{", sig.return_type());
+    for local in locals {
+        let _ = writeln!(out, "    long {local};");
+    }
     emit_block(body, 1, &targeted, &mut out);
     let _ = writeln!(out, "}}");
     out

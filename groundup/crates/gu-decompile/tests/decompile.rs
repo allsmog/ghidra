@@ -74,6 +74,41 @@ fn output_is_balanced_and_nonempty() {
     }
 }
 
+const STASH: [u32; 7] = [
+    0xff010113, // addi sp, sp, -16
+    0x00a50513, // addi a0, a0, 10
+    0x00a13423, // sd a0, 8(sp)
+    0x00813583, // ld a1, 8(sp)
+    0x00159513, // slli a0, a1, 1
+    0x01010113, // addi sp, sp, 16
+    0x00008067, // ret
+];
+
+#[test]
+fn recovers_signature() {
+    // One argument read, returns a value.
+    assert!(decompile(&SUM_TO_N).contains("long f(long a0)"), "{}", decompile(&SUM_TO_N));
+    // Two arguments.
+    assert!(decompile(&MAXFN).contains("long f(long a0, long a1)"), "{}", decompile(&MAXFN));
+    // No arguments, but returns a constant -> long, not void.
+    let c = decompile(&COMPUTE);
+    assert!(c.contains("long f(void)"), "{c}");
+    // A phantom a1 (from the conservative return ABI model) must not appear.
+    assert!(!c.contains("a1"), "phantom parameter leaked:\n{c}");
+}
+
+#[test]
+fn recovers_stack_local() {
+    let c = decompile(&STASH);
+    // The spill slot becomes a declared local, not a memory dereference.
+    assert!(c.contains("long local_8;"), "missing local declaration:\n{c}");
+    assert!(c.contains("local_8 = (a0 + 0xa)"), "store not lowered to local:\n{c}");
+    assert!(!c.contains("*(int"), "raw memory access remains:\n{c}");
+    // Stack-pointer bookkeeping is hidden.
+    assert!(!c.contains("sp ="), "sp adjustment leaked:\n{c}");
+    assert!(c.contains("long f(long a0)"), "{c}");
+}
+
 #[test]
 fn empty_function_does_not_panic() {
     let lifted = lift_function("empty", &[]);

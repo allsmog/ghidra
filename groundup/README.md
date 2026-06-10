@@ -18,7 +18,7 @@ kernel with a diffable text project model.
 | `gu-ir` | Register-transfer IR | Small RE-native IR (P-code spirit), not a compiler IR |
 | `gu-rv64` | RV64IM decoder + lifter | Stand-in for spec-generated lifters; tested against llvm-mc encodings |
 | `gu-ssa` | SSA construction + analyses | Constant propagation, folding, DCE; the foundation a decompiler stands on |
-| `gu-decompile` | Structured pseudo-C | Expression propagation + control-flow structuring into `if`/`while` |
+| `gu-decompile` | Structured pseudo-C | Expression propagation, `if`/`while` structuring, stack-variable and signature recovery |
 | `gu-kernel` | Query engine + model | Incremental recomputation; user model is diffable text |
 | `gu-cli` | `gu` binary | Just a client of the kernel — like every future frontend |
 
@@ -33,6 +33,7 @@ cargo run -p gu-cli -- ssa    fixtures/sum.o sum_to_n     # phi nodes at the loo
 cargo run -p gu-cli -- opt    fixtures/consts.o compute   # folds to `return 42`
 cargo run -p gu-cli -- decompile fixtures/sum.o sum_to_n  # recovers a `while` loop
 cargo run -p gu-cli -- decompile fixtures/branch.o maxfn  # recovers an `if`/`else`
+cargo run -p gu-cli -- decompile fixtures/locals.o stash  # recovers a stack local
 cargo run -p gu-cli -- demo   fixtures/sum.o # incremental recomputation demo
 
 # Stripped linked executable: no symbols, functions found by recursive
@@ -42,10 +43,11 @@ cargo run -p gu-cli -- disasm fixtures/calls_stripped fn_11120
 ```
 
 `decompile` is the end of the pipeline. The eight raw RV64 instructions of
-`sum_to_n` become:
+`sum_to_n` become a function with a recovered signature and a structured
+loop:
 
 ```c
-long sum_to_n() {
+long sum_to_n(long a0) {
     t0 = 0;
     t1 = 1;
     while (a0 >= t1) {
@@ -53,6 +55,19 @@ long sum_to_n() {
         t1 = (t1 + 1);
     }
     return t0;
+}
+```
+
+`stash` (in `locals.o`) shows stack-variable recovery: a spilled value that
+survives optimization becomes a declared local, not a memory dereference,
+and the stack-pointer bookkeeping is hidden:
+
+```c
+long stash(long a0) {
+    long local_8;
+    local_8 = (a0 + 0xa);
+    a1 = local_8;
+    return (a1 << 1);
 }
 ```
 
@@ -67,6 +82,7 @@ cd fixtures
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o sum.o sum.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o consts.o consts.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o branch.o branch.s
+llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o locals.o locals.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o calls.tmp.o calls.s
 ld.lld -e _start -o calls calls.tmp.o && rm calls.tmp.o
 llvm-objcopy --strip-all calls calls_stripped

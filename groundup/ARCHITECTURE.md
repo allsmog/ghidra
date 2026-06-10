@@ -106,7 +106,13 @@ Roadmap, roughly in order:
 6. **API server** — the kernel behind a versioned protocol (JSON-RPC or
    GraphQL), Python client first.
 7. **Type system + data layout analysis** — struct recovery in the spirit
-   of rev.ng's DLA; DWARF/PDB import.
+   of rev.ng's DLA; DWARF/PDB import. *Started:* `gu-decompile/vars.rs`
+   recovers stack locals (via a restricted value-set analysis over the
+   stack pointer) and function signatures (parameters from live-in argument
+   registers, `long`/`void` return). Remaining: real types and widths,
+   struct/array layout, and modeling call arguments (today calls clobber
+   but do not read argument registers, so inter-procedural argument passing
+   is invisible — see the `_start`/`alpha` decompilation).
 8. **UI client** — listing/graph/decompiler views over the API.
 
 ## Influences
