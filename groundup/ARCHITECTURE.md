@@ -92,8 +92,12 @@ Roadmap, roughly in order:
    points and call targets, with measured extents.~~ Done (see
    `gu-kernel/src/discover.rs`; stripped binaries analyze fully). Remaining:
    prologue heuristics for code only reachable indirectly.
-4. **SSA + analyses on gu-ir** — SSA construction, constant propagation,
-   value-set analysis; the road to a decompiler.
+4. ~~**SSA + analyses on gu-ir** — SSA construction, constant propagation,
+   dead-code elimination.~~ Done (`gu-ssa`: dominator-tree phi placement,
+   renaming, a constant lattice, folding, and DCE; calls model clobbers,
+   returns model ABI live-out). Remaining: value-set analysis and the jump
+   tables / indirect-call resolution it enables; expression trees toward a
+   C-like decompiler view.
 5. **Spec-driven lifters** — a Sleigh-like DSL (or Sleigh import) replacing
    hand-written decoders; differential testing against QEMU/Unicorn.
 6. **API server** — the kernel behind a versioned protocol (JSON-RPC or

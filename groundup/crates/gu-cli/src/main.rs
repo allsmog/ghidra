@@ -15,6 +15,9 @@ commands:
   info     ELF header, sections, and function symbols
   disasm   disassemble functions (all, or just [function])
   lift     lift functions to IR and print the CFG
+  ssa      build SSA form (phi nodes at control-flow merges)
+  opt      optimize SSA (constant propagation, folding, dead-code
+           elimination) and show node counts before/after
   demo     show incremental recomputation: warm the cache, rename a
            function, and watch what does (and does not) recompute
 ";
@@ -58,6 +61,18 @@ fn run(cmd: &str, data: Vec<u8>, func: Option<&str>) -> Result<(), Box<dyn std::
         "lift" => with_functions(data, func, |k, entry| {
             print!("{}", k.lifted(entry)?.render(&Rv64Namer));
             println!();
+            Ok(())
+        }),
+        "ssa" => with_functions(data, func, |k, entry| {
+            print!("{}", k.ssa(entry)?.render(&Rv64Namer));
+            println!();
+            Ok(())
+        }),
+        "opt" => with_functions(data, func, |k, entry| {
+            let before = k.ssa(entry)?.node_count();
+            let opt = k.opt_ssa(entry)?;
+            print!("{}", opt.render(&Rv64Namer));
+            println!("  ; nodes: {before} -> {} after optimization\n", opt.node_count());
             Ok(())
         }),
         "demo" => demo(data),

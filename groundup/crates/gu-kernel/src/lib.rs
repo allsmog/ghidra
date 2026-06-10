@@ -26,6 +26,7 @@ mod discover;
 use gu_elf::{Elf, ElfError};
 use gu_ir::LiftedFn;
 use gu_rv64::{decode_all, lift_function, Insn, Mnemonic};
+use gu_ssa::SsaProgram;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::fmt::Write as _;
@@ -113,6 +114,8 @@ pub enum Query {
     Functions,
     Insns(u64),
     Lifted(u64),
+    Ssa(u64),
+    OptSsa(u64),
     /// The name an address should display as: model override, else symbol.
     /// A query of its own so that redundant model edits get early-cutoff.
     DisplayName(u64),
@@ -125,6 +128,8 @@ impl fmt::Display for Query {
             Query::Functions => write!(f, "functions()"),
             Query::Insns(a) => write!(f, "insns({a:#x})"),
             Query::Lifted(a) => write!(f, "lifted({a:#x})"),
+            Query::Ssa(a) => write!(f, "ssa({a:#x})"),
+            Query::OptSsa(a) => write!(f, "opt_ssa({a:#x})"),
             Query::DisplayName(a) => write!(f, "display_name({a:#x})"),
             Query::Listing(a) => write!(f, "listing({a:#x})"),
         }
@@ -151,6 +156,7 @@ enum Output {
     Functions(Vec<FuncInfo>),
     Insns(Vec<Insn>),
     Lifted(LiftedFn),
+    Ssa(SsaProgram),
     Name(Option<String>),
     Listing(String),
 }
@@ -396,6 +402,14 @@ impl Kernel {
                 };
                 Ok(Output::Name(name))
             }
+            Query::Ssa(entry) => {
+                let lifted = self.lifted(entry)?;
+                Ok(Output::Ssa(gu_ssa::build(&lifted)))
+            }
+            Query::OptSsa(entry) => {
+                let ssa = self.ssa(entry)?;
+                Ok(Output::Ssa(gu_ssa::optimize(&ssa)))
+            }
             Query::Listing(entry) => Ok(Output::Listing(self.compute_listing(entry)?)),
         }
     }
@@ -465,6 +479,20 @@ impl Kernel {
         match self.get(&Query::Lifted(entry))? {
             Output::Lifted(v) => Ok(v),
             _ => panic!("lifted() produced wrong output kind"),
+        }
+    }
+
+    pub fn ssa(&mut self, entry: u64) -> Result<SsaProgram> {
+        match self.get(&Query::Ssa(entry))? {
+            Output::Ssa(v) => Ok(v),
+            _ => panic!("ssa() produced wrong output kind"),
+        }
+    }
+
+    pub fn opt_ssa(&mut self, entry: u64) -> Result<SsaProgram> {
+        match self.get(&Query::OptSsa(entry))? {
+            Output::Ssa(v) => Ok(v),
+            _ => panic!("opt_ssa() produced wrong output kind"),
         }
     }
 

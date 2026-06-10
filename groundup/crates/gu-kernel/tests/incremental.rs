@@ -129,6 +129,33 @@ fn early_cutoff_when_recomputed_value_is_equal() {
 }
 
 #[test]
+fn ssa_queries_ride_the_incremental_engine() {
+    let (mut k, sum, _, _) = kernel();
+
+    // SSA of the loop has phi nodes; optimization is a no-op on it but the
+    // query still memoizes.
+    let ssa = k.ssa(sum).unwrap();
+    let has_phi = ssa.blocks.iter().any(|b| !b.phis.is_empty());
+    assert!(has_phi, "sum_to_n's loop should produce phi nodes");
+    k.opt_ssa(sum).unwrap();
+    k.take_log();
+
+    // A pure rename does not touch SSA: it depends only on bytes.
+    k.set_function_name(sum, "sum");
+    k.ssa(sum).unwrap();
+    k.opt_ssa(sum).unwrap();
+    let log = k.take_log();
+    assert!(
+        log.contains(&format!("cached   ssa({sum:#x})")),
+        "SSA must be reused across renames, got: {log:?}"
+    );
+    assert!(
+        log.contains(&format!("cached   opt_ssa({sum:#x})")),
+        "optimized SSA must be reused across renames, got: {log:?}"
+    );
+}
+
+#[test]
 fn model_round_trips_as_text() {
     let (mut k, sum, entry, _) = kernel();
     k.set_function_name(sum, "sum");

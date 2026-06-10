@@ -1,12 +1,10 @@
 [package]
-name = "gu-kernel"
-description = "Incremental, dependency-tracked analysis kernel"
+name = "gu-ssa"
+description = "SSA construction and SSA-based analyses over gu-ir"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-gu-elf = { path = "../gu-elf" }
 gu-ir = { path = "../gu-ir" }
 gu-rv64 = { path = "../gu-rv64" }
-gu-ssa = { path = "../gu-ssa" }
