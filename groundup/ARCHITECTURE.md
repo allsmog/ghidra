@@ -137,8 +137,11 @@ Roadmap, roughly in order:
    dereferenced at several distinct constant offsets is a struct, and each
    offset becomes a field (`pair_sum`'s accesses at 0/8/16 become
    `a0->field_0`/`field_8`/`field_10`, with stores as field assignments).
-   Remaining: named struct typedefs and field types, nested arrays of
-   structs, and signedness from comparison operators.
+   *Signedness is recovered* from the operators a value flows through:
+   signed/unsigned comparisons, divisions, and shifts give per-value
+   evidence that refines integer types (`umax`, which compares with `bltu`,
+   recovers `unsigned long umax(unsigned long, unsigned long)`). Remaining:
+   named struct typedefs and field types, and nested arrays of structs.
 8. **UI client** — listing/graph/decompiler views over the API.
 
 ## Influences

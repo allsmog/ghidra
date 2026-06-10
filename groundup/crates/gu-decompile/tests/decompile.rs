@@ -201,6 +201,41 @@ fn scalar_pointer_is_not_treated_as_struct() {
     assert!(c.contains("a0[t1]"), "{c}");
 }
 
+/// umax(a, b): unsigned max via an unsigned compare (bltu). Both arguments
+/// and the result are therefore unsigned.
+const UMAX: [u32; 4] = [
+    0x00b56463, // bltu a0, a1, +8
+    0x00008067, // ret  (return a0)
+    0x00058513, // mv a0, a1
+    0x00008067, // ret
+];
+
+/// smax(a, b): signed max via a signed compare (blt). Stays signed (long).
+const SMAX: [u32; 4] = [
+    0x00b54463, // blt a0, a1, +8
+    0x00008067, // ret
+    0x00058513, // mv a0, a1
+    0x00008067, // ret
+];
+
+#[test]
+fn unsigned_comparison_recovers_unsigned_types() {
+    let c = decompile(&UMAX);
+    // The unsigned compare makes both parameters and the return unsigned.
+    assert!(
+        c.contains("unsigned long f(unsigned long a0, unsigned long a1)"),
+        "unsigned signature not recovered:\n{c}"
+    );
+}
+
+#[test]
+fn signed_comparison_stays_signed() {
+    // A signed compare must not turn the type unsigned.
+    let c = decompile(&SMAX);
+    assert!(c.contains("long f(long a0, long a1)"), "{c}");
+    assert!(!c.contains("unsigned"), "signed compare became unsigned:\n{c}");
+}
+
 #[test]
 fn pointer_reuse_does_not_pollute_parameter_type() {
     // sum_to_n returns via a0 (reused as the result holder) but takes a0 as a

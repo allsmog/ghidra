@@ -13,9 +13,9 @@
 //! sound (if sometimes imprecise) C rendering.
 
 use gu_rv64::Rv64Namer;
-use gu_ir::{BinOp, RegNamer};
+use gu_ir::{BinOp, CmpOp, RegNamer};
 use gu_ssa::{Key, SsaExpr, SsaProgram, SsaStmt, SsaVal};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::vars::{slot_of, StackMap};
 
@@ -224,19 +224,119 @@ fn pointer_base(a: SsaVal, b: SsaVal, ty: &HashMap<Key, Ty>) -> Option<SsaVal> {
     None
 }
 
+/// Signedness evidence for a value, gathered from the operators it flows
+/// through. Comparisons and arithmetic that distinguish signed from unsigned
+/// reveal whether their operands are meant to be signed.
+#[derive(Clone, Copy, PartialEq)]
+enum SignEv {
+    Signed,
+    Unsigned,
+    Conflict,
+}
+
+impl SignEv {
+    fn of(signed: bool) -> SignEv {
+        if signed {
+            SignEv::Signed
+        } else {
+            SignEv::Unsigned
+        }
+    }
+
+    fn merge(self, other: SignEv) -> SignEv {
+        if self == other {
+            self
+        } else {
+            SignEv::Conflict
+        }
+    }
+
+    fn as_bool(self) -> Option<bool> {
+        match self {
+            SignEv::Signed => Some(true),
+            SignEv::Unsigned => Some(false),
+            SignEv::Conflict => None,
+        }
+    }
+}
+
+/// Collects signedness evidence per SSA value from signed/unsigned operators.
+fn collect_signs(prog: &SsaProgram) -> HashMap<Key, SignEv> {
+    let mut signs: HashMap<Key, SignEv> = HashMap::new();
+    let mut note = |v: &SsaVal, signed: bool| {
+        if let Some(k) = v.key() {
+            let e = signs.entry(k).or_insert(SignEv::of(signed));
+            *e = e.merge(SignEv::of(signed));
+        }
+    };
+    for block in &prog.blocks {
+        for (_, stmt) in &block.stmts {
+            match stmt {
+                SsaStmt::CondJump { op, lhs, rhs, .. } => {
+                    let signed = match op {
+                        CmpOp::LtS | CmpOp::GeS => Some(true),
+                        CmpOp::LtU | CmpOp::GeU => Some(false),
+                        CmpOp::Eq | CmpOp::Ne => None, // no signedness meaning
+                    };
+                    if let Some(s) = signed {
+                        note(lhs, s);
+                        note(rhs, s);
+                    }
+                }
+                SsaStmt::Assign { expr: SsaExpr::Bin(op, a, b), .. } => match op {
+                    BinOp::SltS | BinOp::DivS | BinOp::RemS => {
+                        note(a, true);
+                        note(b, true);
+                    }
+                    BinOp::SltU | BinOp::DivU | BinOp::RemU => {
+                        note(a, false);
+                        note(b, false);
+                    }
+                    BinOp::Sar => note(a, true),  // arithmetic shift: signed
+                    BinOp::Shr => note(a, false), // logical shift: unsigned
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+    signs
+}
+
+/// Refines a type with signedness evidence: overrides an integer's sign, or
+/// gives a default-width integer when only signedness is known.
+fn apply_sign(t: Ty, ev: Option<SignEv>) -> Ty {
+    match (t, ev.and_then(SignEv::as_bool)) {
+        (Ty::Int { bits, .. }, Some(signed)) => Ty::Int { bits, signed },
+        (Ty::Unknown, Some(signed)) => Ty::Int { bits: 64, signed },
+        (other, _) => other,
+    }
+}
+
 /// Projects SSA value types onto variables: register types join over all
 /// versions; stack-slot types come from the access widths.
 fn project(prog: &SsaProgram, stack: &StackMap, ty: &HashMap<Key, Ty>) -> Types {
+    let signs = collect_signs(prog);
+    // Each value's type, refined by its own signedness evidence.
+    let final_ty = |key: &Key| -> Ty {
+        apply_sign(ty.get(key).cloned().unwrap_or(Ty::Unknown), signs.get(key).copied())
+    };
+
+    // Every key that has a width type or signedness evidence.
+    let mut keys: HashSet<Key> = ty.keys().copied().collect();
+    keys.extend(signs.keys().copied());
+
     let mut reg: HashMap<String, Ty> = HashMap::new();
     let mut param: HashMap<String, Ty> = HashMap::new();
-    for (key, t) in ty {
+    for key in &keys {
         if let Key::Reg(r, ver) = key {
             let name = Rv64Namer.reg_name(*r).to_string();
+            let t = final_ty(key);
             let entry = reg.entry(name.clone()).or_insert(Ty::Unknown);
-            *entry = entry.join(t);
+            *entry = entry.join(&t);
             if *ver == 0 {
                 let p = param.entry(name).or_insert(Ty::Unknown);
-                *p = p.join(t);
+                *p = p.join(&t);
             }
         }
     }
@@ -247,7 +347,7 @@ fn project(prog: &SsaProgram, stack: &StackMap, ty: &HashMap<Key, Ty>) -> Types 
         for (_, stmt) in &block.stmts {
             if let SsaStmt::Return { live_out } = stmt {
                 if let Some(v) = live_out.first() {
-                    let vt = v.key().and_then(|k| ty.get(&k).cloned()).unwrap_or(Ty::Unknown);
+                    let vt = v.key().map(|k| final_ty(&k)).unwrap_or(Ty::Unknown);
                     ret = ret.join(&vt);
                 }
             }

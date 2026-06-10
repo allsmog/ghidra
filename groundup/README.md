@@ -180,6 +180,7 @@ llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o locals.o locals.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o types.o types.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o array.o array.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o struct.o struct.s
+llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o signs.o signs.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o calls.tmp.o calls.s
 ld.lld -e _start -o calls calls.tmp.o && rm calls.tmp.o
 llvm-objcopy --strip-all calls calls_stripped
