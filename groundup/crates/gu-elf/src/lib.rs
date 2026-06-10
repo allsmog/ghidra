@@ -272,7 +272,7 @@ mod tests {
 
         let funcs = elf.function_symbols();
         let names: Vec<&str> = funcs.iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(names, ["sum_to_n", "entry"]);
+        assert_eq!(names, ["sum_to_n", "entry", "leaf"]);
 
         let (body, addr) = elf.function_body(funcs[0]).unwrap();
         assert_eq!(addr, 0);

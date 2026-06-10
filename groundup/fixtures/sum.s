@@ -32,3 +32,11 @@ entry:
     addi    sp, sp, 16
     jalr    zero, 0(ra)
     .size entry, .-entry
+
+# A function unrelated to the others: it calls nothing and nothing calls
+# it. Used to prove that renames elsewhere do not invalidate its listing.
+    .type leaf, @function
+leaf:
+    addi    a0, a0, 7
+    jalr    zero, 0(ra)
+    .size leaf, .-leaf

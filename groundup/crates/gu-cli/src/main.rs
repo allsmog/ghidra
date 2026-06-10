@@ -145,7 +145,10 @@ fn demo(data: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
         println!();
     }
     print_log(&mut k);
-    println!("note: listings recomputed; decoding was reused from cache.");
+    println!(
+        "note: only listings that display the renamed function recomputed;\n\
+         decoding was reused, and unrelated listings were not touched at all."
+    );
 
     println!("\n== 4. the model (diffable project state) ==");
     print!("{}", k.model().to_text());

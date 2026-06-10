@@ -20,16 +20,22 @@ this shape today (client/server with a GraphQL API and a VSCode-based UI).
 
 Interactive reverse engineering is a dialogue: the analyst renames, retypes,
 and re-asks. A batch "auto-analysis" phase with ad-hoc cache invalidation
-fights that dialogue. The kernel instead models every derived artifact as a
-query with recorded input dependencies and revision stamps — change an
-input, and only dependent queries recompute. `gu kernel`'s query log makes
-this visible: a rename re-renders listings but never re-decodes bytes.
+fights that dialogue. The kernel instead implements a salsa-style query
+engine (the architecture behind rust-analyzer):
 
-The implementation here is the minimal honest version: fixed dependency
-sets per query kind, coarse inputs (`Binary`, `Names`), no early cutoff, no
-parallelism. The production version is a salsa-style engine with dynamic
-dependency tracking and fine-grained inputs (per-function bytes, per-symbol
-names) so invalidation stays proportional to the edit.
+- **Dynamic dependency capture** — while a query runs, every input it reads
+  and sub-query it asks is recorded; dependencies are exactly what was read,
+  never declared by hand.
+- **Fine-grained inputs** — each function name is its own input cell, so
+  renaming one function invalidates only the listings that display it;
+  `gu demo`'s query log shows unrelated listings staying cached.
+- **Early cutoff** — a re-executed query whose value comes out equal does
+  not bump its change stamp, so its dependents are not recomputed. Setting
+  an input to the value it already holds is a complete no-op.
+
+Still deliberately bounded: single-threaded, no cycle recovery (the query
+graph is acyclic by construction), errors are not memoized. The production
+steps from here are parallel query execution and durable (on-disk) memos.
 
 ### 3. Memory-safe parsing of hostile input
 
@@ -76,8 +82,9 @@ fully tested (`cargo test`), zero clippy warnings, zero dependencies.
 
 Roadmap, roughly in order:
 
-1. **Salsa-style query engine** — dynamic dependency capture, fine-grained
-   input keys, early cutoff, parallel queries.
+1. ~~**Salsa-style query engine** — dynamic dependency capture, fine-grained
+   input keys, early cutoff.~~ Done (single-threaded; parallel queries and
+   durable memos remain).
 2. **Linked-binary support** — program headers, dynamic symbols, PLT/GOT,
    then PE and Mach-O loaders under the same safety rules.
 3. **Function discovery beyond symbols** — recursive descent from entry
