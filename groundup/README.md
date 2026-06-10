@@ -35,6 +35,7 @@ cargo run -p gu-cli -- decompile fixtures/sum.o sum_to_n  # recovers a `while` l
 cargo run -p gu-cli -- decompile fixtures/branch.o maxfn  # recovers an `if`/`else`
 cargo run -p gu-cli -- decompile fixtures/locals.o stash  # recovers a stack local
 cargo run -p gu-cli -- decompile fixtures/types.o byte_sum # recovers pointer & byte types
+cargo run -p gu-cli -- decompile fixtures/array.o word_sum # recovers array indexing (a0[i])
 cargo run -p gu-cli -- demo   fixtures/sum.o # incremental recomputation demo
 
 # Stripped linked executable: no symbols, functions found by recursive
@@ -97,8 +98,24 @@ long byte_sum(unsigned char *a0, long a1) {
     t0 = 0;
     t1 = 0;
     while (t1 < a1) {
-        t3 = *(uint8_t*)((a0 + t1));
+        t3 = a0[t1];
         t0 = (t0 + t3);
+        t1 = (t1 + 1);
+    }
+    return t0;
+}
+```
+
+When a pointer is indexed by a scaled variable (`base + i*stride` with
+`stride` the element size), the dereference is rendered as array access. In
+`word_sum`, `ptr + i*8` over 8-byte words becomes `a0[t1]`:
+
+```c
+long word_sum(long *a0, long a1) {
+    ...
+    while (t1 < a1) {
+        t4 = a0[t1];
+        t0 = (t0 + t4);
         t1 = (t1 + 1);
     }
     return t0;
@@ -118,6 +135,7 @@ llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o consts.o consts.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o branch.o branch.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o locals.o locals.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o types.o types.s
+llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o array.o array.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o calls.tmp.o calls.s
 ld.lld -e _start -o calls calls.tmp.o && rm calls.tmp.o
 llvm-objcopy --strip-all calls calls_stripped

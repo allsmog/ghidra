@@ -102,6 +102,28 @@ impl Types {
     pub fn return_ctype(&self) -> String {
         self.ret.c_name()
     }
+
+    /// If `name` is a pointer, the size in bytes of what it points to. Checks
+    /// the incoming-parameter type first (a register reused later may have a
+    /// conflicting joined type), then the joined type.
+    pub fn pointee_size(&self, name: &str) -> Option<u8> {
+        for m in [&self.param, &self.reg] {
+            if let Some(Ty::Ptr(inner)) = m.get(name) {
+                return inner.byte_size();
+            }
+        }
+        None
+    }
+}
+
+impl Ty {
+    fn byte_size(&self) -> Option<u8> {
+        match self {
+            Ty::Int { bits, .. } => Some(bits / 8),
+            Ty::Ptr(_) => Some(8),
+            _ => None,
+        }
+    }
 }
 
 /// The inferred type of each SSA value.

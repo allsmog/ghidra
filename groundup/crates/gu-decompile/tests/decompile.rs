@@ -137,6 +137,38 @@ fn recovers_pointer_and_width_types() {
     assert!(c.contains("long a1") || c.contains("(long a1"), "{c}");
 }
 
+/// word_sum(ptr, n): sums n 64-bit words via ptr[i] (base + i*8).
+const WORD_SUM: [u32; 11] = [
+    0x00000293, // addi t0, zero, 0
+    0x00000313, // addi t1, zero, 0
+    0x00b37e63, // bgeu t1, a1, +28
+    0x00331393, // slli t2, t1, 3
+    0x00750e33, // add t3, a0, t2
+    0x000e3e83, // ld t4, 0(t3)
+    0x01d282b3, // add t0, t0, t4
+    0x00130313, // addi t1, t1, 1
+    0xfe9ff06f, // j -28
+    0x00028513, // mv a0, t0
+    0x00008067, // ret
+];
+
+#[test]
+fn scaled_index_becomes_array_access() {
+    // base + i*8 with an 8-byte element renders as base[i].
+    let c = decompile(&WORD_SUM);
+    assert!(c.contains("a0[t1]"), "array index not recovered:\n{c}");
+    assert!(!c.contains("<< 3"), "scaled offset still raw:\n{c}");
+    assert!(!c.contains("*(int64_t*)"), "raw deref remains:\n{c}");
+    assert!(c.contains("long *a0"), "pointer type lost:\n{c}");
+}
+
+#[test]
+fn byte_array_index_uses_unit_stride() {
+    // base + i (stride 1) on a byte pointer also renders as base[i].
+    let c = decompile(&BYTE_SUM);
+    assert!(c.contains("a0[t1]"), "byte array index not recovered:\n{c}");
+}
+
 #[test]
 fn pointer_reuse_does_not_pollute_parameter_type() {
     // sum_to_n returns via a0 (reused as the result holder) but takes a0 as a

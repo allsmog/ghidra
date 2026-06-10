@@ -119,8 +119,11 @@ Roadmap, roughly in order:
    type lattice (`int`/`unsigned char`/pointers...) is inferred from load
    widths, address use, and pointer arithmetic, propagated to a fixpoint;
    parameters are typed from their incoming value so register reuse can't
-   pollute them (`byte_sum`'s `a0` recovers as `unsigned char *`). Remaining:
-   struct and array layout, and signedness from comparison operators.
+   pollute them (`byte_sum`'s `a0` recovers as `unsigned char *`). *Array
+   indexing is recovered* too: `base + index*stride` with `stride` equal to
+   the pointee size renders as `base[index]` (`word_sum`'s `ptr + i*8`
+   becomes `a0[t1]`). Remaining: struct field layout (constant offsets),
+   nested arrays of structs, and signedness from comparison operators.
 8. **UI client** — listing/graph/decompiler views over the API.
 
 ## Influences

@@ -14,6 +14,10 @@ pub enum HExpr {
     Cmp(CmpOp, Box<HExpr>, Box<HExpr>),
     Un(UnOp, Box<HExpr>),
     Load { addr: Box<HExpr>, size: u8, signed: bool },
+    /// `base[index]` — a load recognized as array indexing.
+    Index(Box<HExpr>, Box<HExpr>),
+    /// `*base` — a load through a typed pointer at offset zero.
+    Deref(Box<HExpr>),
 }
 
 impl HExpr {
@@ -372,6 +376,108 @@ fn lower_block(
     };
 
     LowBlock { body, term }
+}
+
+/// Rewrites memory dereferences into array indexing or pointer deref where
+/// the base is a typed pointer. `pointee_size` gives the size in bytes of
+/// what a named pointer variable points to, if it is a pointer.
+///
+/// - `*(T*)(base + index*size)` with `size` the pointee size -> `base[index]`
+/// - `*(T*)(base)` where `base` is a pointer            -> `*base`
+pub fn simplify_array_accesses(
+    stmts: &mut [HStmt],
+    pointee_size: &dyn Fn(&str) -> Option<u8>,
+) {
+    for stmt in stmts {
+        match stmt {
+            HStmt::Assign(_, e) | HStmt::Return(Some(e)) | HStmt::IndirectJump(e) => {
+                rewrite_expr(e, pointee_size)
+            }
+            HStmt::Store { addr, val, .. } => {
+                rewrite_expr(addr, pointee_size);
+                rewrite_expr(val, pointee_size);
+            }
+            HStmt::Call { args, .. } => {
+                args.iter_mut().for_each(|a| rewrite_expr(a, pointee_size))
+            }
+            HStmt::CallIndirect { target, args } => {
+                rewrite_expr(target, pointee_size);
+                args.iter_mut().for_each(|a| rewrite_expr(a, pointee_size));
+            }
+            HStmt::If { cond, then_body, else_body } => {
+                rewrite_expr(cond, pointee_size);
+                simplify_array_accesses(then_body, pointee_size);
+                simplify_array_accesses(else_body, pointee_size);
+            }
+            HStmt::While { cond, body } => {
+                rewrite_expr(cond, pointee_size);
+                simplify_array_accesses(body, pointee_size);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The pointer variable name and pointee size of an expression, if it names
+/// a pointer.
+fn as_pointer(e: &HExpr, pointee_size: &dyn Fn(&str) -> Option<u8>) -> Option<u8> {
+    match e {
+        HExpr::Var(name) => pointee_size(name),
+        _ => None,
+    }
+}
+
+/// The index expression of `index * stride`, if `e` scales by `stride`
+/// (either `index << log2(stride)` or `index * stride`).
+fn scaled_index(e: &HExpr, stride: u8) -> Option<HExpr> {
+    match e {
+        HExpr::Bin(BinOp::Shl, idx, shift) => match **shift {
+            HExpr::Const(k) if (1i64 << k) == stride as i64 => Some((**idx).clone()),
+            _ => None,
+        },
+        HExpr::Bin(BinOp::Mul, idx, factor) => match **factor {
+            HExpr::Const(s) if s == stride as i64 => Some((**idx).clone()),
+            _ => None,
+        },
+        // stride 1: the index is itself the offset.
+        _ if stride == 1 => Some(e.clone()),
+        _ => None,
+    }
+}
+
+fn rewrite_expr(e: &mut HExpr, pointee_size: &dyn Fn(&str) -> Option<u8>) {
+    // Recurse first so nested loads are handled.
+    match e {
+        HExpr::Bin(_, a, b) | HExpr::Cmp(_, a, b) | HExpr::Index(a, b) => {
+            rewrite_expr(a, pointee_size);
+            rewrite_expr(b, pointee_size);
+        }
+        HExpr::Un(_, v) | HExpr::Deref(v) => rewrite_expr(v, pointee_size),
+        HExpr::Load { addr, .. } => rewrite_expr(addr, pointee_size),
+        HExpr::Var(_) | HExpr::Const(_) => {}
+    }
+
+    let HExpr::Load { addr, size, .. } = e else { return };
+    let size = *size;
+    let replacement = match addr.as_ref() {
+        // base + index*size  ->  base[index]
+        HExpr::Bin(BinOp::Add, base, offset) => {
+            match (as_pointer(base, pointee_size), scaled_index(offset, size)) {
+                (Some(psize), Some(idx)) if psize == size => {
+                    Some(HExpr::Index(base.clone(), Box::new(idx)))
+                }
+                _ => None,
+            }
+        }
+        // bare typed pointer  ->  *base
+        base @ HExpr::Var(_) => as_pointer(base, pointee_size)
+            .filter(|&psize| psize == size)
+            .map(|_| HExpr::Deref(Box::new(base.clone()))),
+        _ => None,
+    };
+    if let Some(r) = replacement {
+        *e = r;
+    }
 }
 
 fn is_terminator(s: &SsaStmt) -> bool {

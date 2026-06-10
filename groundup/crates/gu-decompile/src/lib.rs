@@ -60,7 +60,10 @@ pub fn decompile(
 
     let analysis = cfg::Analysis::new(prog);
     let bodies = hir::lower_blocks(prog, &stack, name_of, arity_of);
-    let structured = structure::structure(prog, &analysis, &bodies);
+    let mut structured = structure::structure(prog, &analysis, &bodies);
+
+    // Recognize array indexing / pointer deref now that types are known.
+    hir::simplify_array_accesses(&mut structured, &|name| types.pointee_size(name));
 
     // Local declarations: stack slots, then register variables that appear
     // in the body and are neither parameters nor stack slots.

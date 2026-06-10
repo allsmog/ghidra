@@ -57,11 +57,11 @@ pub fn referenced_vars(body: &[HStmt]) -> Vec<String> {
     fn walk_expr(e: &HExpr, f: &mut dyn FnMut(&str)) {
         match e {
             HExpr::Var(n) => f(n),
-            HExpr::Bin(_, a, b) | HExpr::Cmp(_, a, b) => {
+            HExpr::Bin(_, a, b) | HExpr::Cmp(_, a, b) | HExpr::Index(a, b) => {
                 walk_expr(a, f);
                 walk_expr(b, f);
             }
-            HExpr::Un(_, v) => walk_expr(v, f),
+            HExpr::Un(_, v) | HExpr::Deref(v) => walk_expr(v, f),
             HExpr::Load { addr, .. } => walk_expr(addr, f),
             HExpr::Const(_) => {}
         }
@@ -224,6 +224,8 @@ fn fmt_expr(e: &HExpr) -> String {
             let ty = if *signed { c_type(*size) } else { c_utype(*size) };
             format!("*({ty}*)({})", fmt_expr(addr))
         }
+        HExpr::Index(base, idx) => format!("{}[{}]", fmt_expr(base), fmt_expr(idx)),
+        HExpr::Deref(base) => format!("*{}", fmt_expr(base)),
     }
 }
 
