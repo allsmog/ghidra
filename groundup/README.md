@@ -28,14 +28,23 @@ cargo run -p gu-cli -- info   fixtures/sum.o
 cargo run -p gu-cli -- disasm fixtures/sum.o
 cargo run -p gu-cli -- lift   fixtures/sum.o sum_to_n
 cargo run -p gu-cli -- demo   fixtures/sum.o # incremental recomputation demo
+
+# Stripped linked executable: no symbols, functions found by recursive
+# descent from the entry point.
+cargo run -p gu-cli -- info   fixtures/calls_stripped
+cargo run -p gu-cli -- disasm fixtures/calls_stripped fn_11120
 ```
 
 The `demo` command is the point of the exercise: it warms the cache, renames
-a function, and shows in the query log that listings re-render while
-decoding and lifting are reused.
+a function, and shows in the query log that only listings displaying that
+name re-render — decoding, lifting, and unrelated listings are reused.
 
-## Regenerating the fixture
+## Regenerating the fixtures
 
 ```sh
-llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o fixtures/sum.o fixtures/sum.s
+cd fixtures
+llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o sum.o sum.s
+llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o calls.tmp.o calls.s
+ld.lld -e _start -o calls calls.tmp.o && rm calls.tmp.o
+llvm-objcopy --strip-all calls calls_stripped
 ```

@@ -38,6 +38,8 @@ pub const EM_RISCV: u16 = 243;
 pub const SHT_SYMTAB: u32 = 2;
 pub const SHT_NOBITS: u32 = 8;
 pub const STT_FUNC: u8 = 2;
+pub const PT_LOAD: u32 = 1;
+pub const PF_X: u32 = 1;
 
 fn bytes_at(data: &[u8], at: usize, want: usize) -> Result<&[u8]> {
     let end = at.checked_add(want).ok_or(ElfError::Truncated { at, want })?;
@@ -78,10 +80,33 @@ pub struct Header {
     pub etype: u16,
     pub machine: u16,
     pub entry: u64,
+    pub phoff: u64,
+    pub phentsize: u16,
+    pub phnum: u16,
     pub shoff: u64,
     pub shentsize: u16,
     pub shnum: u16,
     pub shstrndx: u16,
+}
+
+#[derive(Debug, Clone)]
+pub struct Segment {
+    pub ptype: u32,
+    pub flags: u32,
+    pub offset: u64,
+    pub vaddr: u64,
+    pub filesz: u64,
+    pub memsz: u64,
+}
+
+impl Segment {
+    pub fn is_executable(&self) -> bool {
+        self.ptype == PT_LOAD && self.flags & PF_X != 0
+    }
+
+    pub fn contains(&self, vaddr: u64) -> bool {
+        vaddr >= self.vaddr && vaddr < self.vaddr.saturating_add(self.filesz)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +141,7 @@ pub struct Elf<'a> {
     pub data: &'a [u8],
     pub header: Header,
     pub sections: Vec<Section>,
+    pub segments: Vec<Segment>,
     pub symbols: Vec<Symbol>,
 }
 
@@ -135,11 +161,33 @@ impl<'a> Elf<'a> {
             etype: u16_at(data, 16)?,
             machine: u16_at(data, 18)?,
             entry: u64_at(data, 24)?,
+            phoff: u64_at(data, 32)?,
+            phentsize: u16_at(data, 54)?,
+            phnum: u16_at(data, 56)?,
             shoff: u64_at(data, 40)?,
             shentsize: u16_at(data, 58)?,
             shnum: u16_at(data, 60)?,
             shstrndx: u16_at(data, 62)?,
         };
+
+        let mut segments = Vec::new();
+        if header.phoff != 0 {
+            if header.phnum > 0 && header.phentsize < 56 {
+                return Err(ElfError::Unsupported("program header entry too small"));
+            }
+            let max_segments = data.len() / 56;
+            for i in 0..(header.phnum as usize).min(max_segments) {
+                let off = header.phoff as usize + i * header.phentsize as usize;
+                segments.push(Segment {
+                    ptype: u32_at(data, off)?,
+                    flags: u32_at(data, off + 4)?,
+                    offset: u64_at(data, off + 8)?,
+                    vaddr: u64_at(data, off + 16)?,
+                    filesz: u64_at(data, off + 32)?,
+                    memsz: u64_at(data, off + 40)?,
+                });
+            }
+        }
 
         let mut sections = Vec::new();
         if header.shoff != 0 {
@@ -202,7 +250,27 @@ impl<'a> Elf<'a> {
             }
         }
 
-        Ok(Elf { data, header, sections, symbols })
+        Ok(Elf { data, header, sections, segments, symbols })
+    }
+
+    /// Reads `len` file-backed bytes at a virtual address through the
+    /// program headers (linked executables and shared objects only).
+    pub fn bytes_at_vaddr(&self, vaddr: u64, len: u64) -> Result<&'a [u8]> {
+        let seg = self
+            .segments
+            .iter()
+            .find(|s| s.ptype == PT_LOAD && s.contains(vaddr))
+            .ok_or(ElfError::Unsupported("address not in any loadable segment"))?;
+        if vaddr.saturating_add(len) > seg.vaddr.saturating_add(seg.filesz) {
+            return Err(ElfError::Truncated { at: vaddr as usize, want: len as usize });
+        }
+        let off = (vaddr - seg.vaddr + seg.offset) as usize;
+        bytes_at(self.data, off, len as usize)
+    }
+
+    /// The executable PT_LOAD segment containing `vaddr`, if any.
+    pub fn exec_segment_at(&self, vaddr: u64) -> Option<&Segment> {
+        self.segments.iter().find(|s| s.is_executable() && s.contains(vaddr))
     }
 
     pub fn section_bytes(&self, sec: &Section) -> Result<&'a [u8]> {
@@ -277,6 +345,34 @@ mod tests {
         let (body, addr) = elf.function_body(funcs[0]).unwrap();
         assert_eq!(addr, 0);
         assert!(!body.is_empty() && body.len() % 4 == 0);
+    }
+
+    #[test]
+    fn parses_linked_executable() {
+        let data: &[u8] = include_bytes!("../../../fixtures/calls");
+        let elf = Elf::parse(data).expect("fixture should parse");
+        assert_eq!(elf.header.etype, ET_EXEC);
+        assert_eq!(elf.header.entry, 0x11120);
+
+        let names: Vec<&str> =
+            elf.function_symbols().iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["_start", "alpha", "beta"]);
+
+        // The entry point must be readable through the program headers and
+        // inside an executable segment.
+        let word = elf.bytes_at_vaddr(elf.header.entry, 4).unwrap();
+        assert_eq!(word.len(), 4);
+        assert!(elf.exec_segment_at(elf.header.entry).is_some());
+        assert!(elf.exec_segment_at(0).is_none());
+        assert!(elf.bytes_at_vaddr(0xdead_0000, 4).is_err());
+    }
+
+    #[test]
+    fn stripped_executable_has_no_symbols_but_readable_entry() {
+        let data: &[u8] = include_bytes!("../../../fixtures/calls_stripped");
+        let elf = Elf::parse(data).expect("fixture should parse");
+        assert!(elf.function_symbols().is_empty());
+        assert!(elf.bytes_at_vaddr(elf.header.entry, 4).is_ok());
     }
 
     #[test]

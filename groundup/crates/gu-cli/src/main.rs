@@ -80,15 +80,36 @@ fn info(data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     println!("type:    {etype} ({})", h.etype);
     println!("machine: {} ({})", if h.machine == gu_elf::EM_RISCV { "RISC-V" } else { "?" }, h.machine);
     println!("entry:   {:#x}", h.entry);
+    if !elf.segments.is_empty() {
+        println!("\nsegments:");
+        for s in elf.segments.iter().filter(|s| s.ptype == gu_elf::PT_LOAD) {
+            let x = if s.is_executable() { " exec" } else { "" };
+            println!(
+                "  load  vaddr {:#010x}  filesz {:#8x}  memsz {:#8x}{x}",
+                s.vaddr, s.filesz, s.memsz
+            );
+        }
+    }
     println!("\nsections:");
     for s in &elf.sections {
         if !s.name.is_empty() {
             println!("  {:<20} addr {:#010x}  size {:#8x}", s.name, s.addr, s.size);
         }
     }
-    println!("\nfunctions:");
-    for f in elf.function_symbols() {
-        println!("  {:#010x}  {:6} bytes  {}", f.value, f.size, f.name);
+    let symbol_count = elf.function_symbols().len();
+    drop(elf);
+
+    // Functions come from the kernel so stripped binaries show discovery
+    // results, not an empty symbol table.
+    let mut kernel = Kernel::new(data.to_vec());
+    let funcs = kernel.functions()?;
+    if symbol_count == 0 && !funcs.is_empty() {
+        println!("\nfunctions (no symbols; discovered by recursive descent):");
+    } else {
+        println!("\nfunctions:");
+    }
+    for f in funcs {
+        println!("  {:#010x}  {:6} bytes  {}", f.entry, f.size, f.name);
     }
     Ok(())
 }

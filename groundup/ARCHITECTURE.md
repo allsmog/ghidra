@@ -85,10 +85,13 @@ Roadmap, roughly in order:
 1. ~~**Salsa-style query engine** — dynamic dependency capture, fine-grained
    input keys, early cutoff.~~ Done (single-threaded; parallel queries and
    durable memos remain).
-2. **Linked-binary support** — program headers, dynamic symbols, PLT/GOT,
-   then PE and Mach-O loaders under the same safety rules.
-3. **Function discovery beyond symbols** — recursive descent from entry
-   points and call targets; prologue heuristics as a fallback.
+2. ~~**Linked-binary support** — program headers and virtual-address
+   reads.~~ Done. Remaining: dynamic symbols, PLT/GOT resolution, then PE
+   and Mach-O loaders under the same safety rules.
+3. ~~**Function discovery beyond symbols** — recursive descent from entry
+   points and call targets, with measured extents.~~ Done (see
+   `gu-kernel/src/discover.rs`; stripped binaries analyze fully). Remaining:
+   prologue heuristics for code only reachable indirectly.
 4. **SSA + analyses on gu-ir** — SSA construction, constant propagation,
    value-set analysis; the road to a decompiler.
 5. **Spec-driven lifters** — a Sleigh-like DSL (or Sleigh import) replacing

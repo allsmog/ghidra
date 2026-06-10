@@ -21,6 +21,8 @@
 
 #![forbid(unsafe_code)]
 
+mod discover;
+
 use gu_elf::{Elf, ElfError};
 use gu_ir::LiftedFn;
 use gu_rv64::{decode_all, lift_function, Insn, Mnemonic};
@@ -335,23 +337,41 @@ impl Kernel {
             Query::Functions => {
                 self.read_binary();
                 let elf = Elf::parse(&self.binary)?;
-                let funcs: Vec<FuncInfo> = elf
-                    .function_symbols()
-                    .iter()
-                    .map(|s| FuncInfo { entry: s.value, name: s.name.clone(), size: s.size })
-                    .collect();
+                let funcs: Vec<FuncInfo> = if elf.header.etype == gu_elf::ET_REL {
+                    // Relocatable objects: call targets are unrelocated, so
+                    // symbols are the only trustworthy source.
+                    elf.function_symbols()
+                        .iter()
+                        .map(|s| FuncInfo { entry: s.value, name: s.name.clone(), size: s.size })
+                        .collect()
+                } else {
+                    discover::discover(&elf)
+                };
                 Ok(Output::Functions(funcs))
             }
             Query::Insns(entry) => {
                 self.read_binary();
                 let elf = Elf::parse(&self.binary)?;
-                let sym = elf
-                    .function_symbols()
-                    .into_iter()
-                    .find(|s| s.value == entry)
-                    .ok_or(KernelError::NoSuchFunction(entry))?;
-                let (body, base) = elf.function_body(sym)?;
-                Ok(Output::Insns(decode_all(base, body)))
+                if elf.header.etype == gu_elf::ET_REL {
+                    let sym = elf
+                        .function_symbols()
+                        .into_iter()
+                        .find(|s| s.value == entry)
+                        .ok_or(KernelError::NoSuchFunction(entry))?;
+                    let (body, base) = elf.function_body(sym)?;
+                    Ok(Output::Insns(decode_all(base, body)))
+                } else {
+                    // Linked binary: extents come from discovery, bytes
+                    // from the program headers.
+                    let info = self
+                        .functions()?
+                        .into_iter()
+                        .find(|f| f.entry == entry)
+                        .ok_or(KernelError::NoSuchFunction(entry))?;
+                    let elf = Elf::parse(&self.binary)?;
+                    let body = elf.bytes_at_vaddr(entry, info.size)?;
+                    Ok(Output::Insns(decode_all(entry, body)))
+                }
             }
             Query::Lifted(entry) => {
                 let symbol_name = self

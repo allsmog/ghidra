@@ -1,0 +1,63 @@
+//! Function discovery on linked executables, with and without symbols.
+
+use gu_kernel::Kernel;
+
+const CALLS: &[u8] = include_bytes!("../../../fixtures/calls");
+const CALLS_STRIPPED: &[u8] = include_bytes!("../../../fixtures/calls_stripped");
+
+#[test]
+fn linked_binary_keeps_symbol_names() {
+    let mut k = Kernel::new(CALLS.to_vec());
+    let funcs = k.functions().unwrap();
+    let names: Vec<&str> = funcs.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["_start", "alpha", "beta"]);
+    assert!(funcs.iter().all(|f| f.size > 0), "extents must be measured: {funcs:?}");
+
+    // Extents must tile without swallowing neighbors: _start may not
+    // extend into alpha even though execution falls past its ecall.
+    assert_eq!(funcs[0].entry + funcs[0].size, funcs[1].entry, "{funcs:?}");
+    assert_eq!(funcs[1].entry + funcs[1].size, funcs[2].entry, "{funcs:?}");
+}
+
+#[test]
+fn stripped_binary_discovers_functions_from_entry() {
+    let mut k = Kernel::new(CALLS_STRIPPED.to_vec());
+    let funcs = k.functions().unwrap();
+
+    // No symbols at all: everything below comes from recursive descent.
+    assert_eq!(funcs.len(), 3, "{funcs:?}");
+    assert_eq!(funcs[0].entry, 0x11120, "seeded from e_entry");
+    let names: Vec<&str> = funcs.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["fn_11120", "fn_11134", "fn_11150"]);
+
+    // The whole pipeline runs on discovered functions: the entry function
+    // calls both others, annotated with synthetic names.
+    let listing = k.listing(0x11120).unwrap();
+    assert!(listing.contains("# call fn_11134"), "got:\n{listing}");
+    assert!(listing.contains("# call fn_11150"), "got:\n{listing}");
+
+    // And lifting sees a real call graph.
+    let lifted = k.lifted(0x11134).unwrap();
+    let text = lifted.render(&gu_rv64::Rv64Namer);
+    assert!(text.contains("call 0x11150"), "got:\n{text}");
+}
+
+#[test]
+fn renames_work_on_discovered_functions() {
+    let mut k = Kernel::new(CALLS_STRIPPED.to_vec());
+    k.functions().unwrap();
+    k.listing(0x11120).unwrap();
+    k.take_log();
+
+    k.set_function_name(0x11150, "shift_left_2");
+    let listing = k.listing(0x11120).unwrap();
+    assert!(listing.contains("# call shift_left_2"), "got:\n{listing}");
+
+    // Fine-grained invalidation holds for discovered functions too: the
+    // renamed callee's own decode is untouched.
+    let log = k.take_log();
+    assert!(
+        log.contains(&"cached   insns(0x11120)".to_string()),
+        "decode must be reused, got: {log:?}"
+    );
+}
