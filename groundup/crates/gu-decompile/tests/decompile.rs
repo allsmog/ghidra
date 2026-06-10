@@ -109,6 +109,42 @@ fn recovers_stack_local() {
     assert!(c.contains("long f(long a0)"), "{c}");
 }
 
+/// byte_sum(ptr, n): sums n unsigned bytes from *ptr. Exercises pointer and
+/// width recovery.
+const BYTE_SUM: [u32; 10] = [
+    0x00000293, // addi t0, zero, 0
+    0x00000313, // addi t1, zero, 0
+    0x00b37c63, // bgeu t1, a1, +24
+    0x006503b3, // add t2, a0, t1
+    0x0003ce03, // lbu t3, 0(t2)
+    0x01c282b3, // add t0, t0, t3
+    0x00130313, // addi t1, t1, 1
+    0xfedff06f, // j -24
+    0x00028513, // mv a0, t0
+    0x00008067, // ret
+];
+
+#[test]
+fn recovers_pointer_and_width_types() {
+    let c = decompile(&BYTE_SUM);
+    // a0 is added to an index and dereferenced as a byte -> unsigned char *.
+    assert!(c.contains("unsigned char *a0"), "pointer not recovered:\n{c}");
+    // The byte load result is typed unsigned char.
+    assert!(c.contains("unsigned char t3"), "byte width not recovered:\n{c}");
+    // Local variables are now declared (the output is C-shaped).
+    assert!(c.contains("long t0;"), "locals not declared:\n{c}");
+    // The index/count register stays a plain integer.
+    assert!(c.contains("long a1") || c.contains("(long a1"), "{c}");
+}
+
+#[test]
+fn pointer_reuse_does_not_pollute_parameter_type() {
+    // sum_to_n returns via a0 (reused as the result holder) but takes a0 as a
+    // plain integer; the reuse must not make the parameter a pointer.
+    let c = decompile(&SUM_TO_N);
+    assert!(c.contains("long f(long a0)"), "parameter type polluted:\n{c}");
+}
+
 #[test]
 fn empty_function_does_not_panic() {
     let lifted = lift_function("empty", &[]);

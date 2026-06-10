@@ -22,6 +22,7 @@ mod cfg;
 mod emit;
 mod hir;
 mod structure;
+mod types;
 mod vars;
 
 use gu_ssa::SsaProgram;
@@ -44,15 +45,38 @@ pub fn decompile(
     arity_of: &dyn Fn(u64) -> usize,
 ) -> String {
     let sig = vars::signature(prog, arity_of);
-    if prog.blocks.is_empty() {
-        return emit::emit(&prog.name, prog.entry, &sig, &[], &[]);
-    }
     let stack = vars::stack_offsets(prog);
-    let locals: Vec<String> =
-        vars::used_slots(prog, &stack).into_iter().map(vars::local_name).collect();
+    let types = types::recover(prog, &stack);
+
+    // Parameters typed from their incoming value; return type from the
+    // returned value.
+    let params: Vec<(String, String)> =
+        sig.params.iter().map(|p| (types.param_ctype(p), p.clone())).collect();
+    let ret = if sig.returns_value { types.return_ctype() } else { "void".to_string() };
+
+    if prog.blocks.is_empty() {
+        return emit::emit(&prog.name, prog.entry, &ret, &params, &[], &[]);
+    }
 
     let analysis = cfg::Analysis::new(prog);
     let bodies = hir::lower_blocks(prog, &stack, name_of, arity_of);
     let structured = structure::structure(prog, &analysis, &bodies);
-    emit::emit(&prog.name, prog.entry, &sig, &locals, &structured)
+
+    // Local declarations: stack slots, then register variables that appear
+    // in the body and are neither parameters nor stack slots.
+    let param_names: std::collections::HashSet<&str> =
+        sig.params.iter().map(String::as_str).collect();
+    let mut decls: Vec<(String, String)> = vars::used_slots(prog, &stack)
+        .into_iter()
+        .map(|off| (types.slot_ctype(off), vars::local_name(off)))
+        .collect();
+    let mut seen: std::collections::HashSet<String> =
+        decls.iter().map(|(_, n)| n.clone()).collect();
+    for name in emit::referenced_vars(&structured) {
+        if !param_names.contains(name.as_str()) && seen.insert(name.clone()) {
+            decls.push((types.reg_ctype(&name), name));
+        }
+    }
+
+    emit::emit(&prog.name, prog.entry, &ret, &params, &decls, &structured)
 }

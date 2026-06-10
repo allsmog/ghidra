@@ -18,7 +18,7 @@ kernel with a diffable text project model.
 | `gu-ir` | Register-transfer IR | Small RE-native IR (P-code spirit), not a compiler IR |
 | `gu-rv64` | RV64IM decoder + lifter | Stand-in for spec-generated lifters; tested against llvm-mc encodings |
 | `gu-ssa` | SSA construction + analyses | Constant propagation, folding, DCE; the foundation a decompiler stands on |
-| `gu-decompile` | Structured pseudo-C | Expression propagation, `if`/`while` structuring, stack-variable and signature recovery |
+| `gu-decompile` | Structured pseudo-C | Expression propagation, `if`/`while` structuring, stack/signature/type recovery |
 | `gu-kernel` | Query engine + model | Incremental recomputation; user model is diffable text |
 | `gu-cli` | `gu` binary | Just a client of the kernel — like every future frontend |
 
@@ -34,6 +34,7 @@ cargo run -p gu-cli -- opt    fixtures/consts.o compute   # folds to `return 42`
 cargo run -p gu-cli -- decompile fixtures/sum.o sum_to_n  # recovers a `while` loop
 cargo run -p gu-cli -- decompile fixtures/branch.o maxfn  # recovers an `if`/`else`
 cargo run -p gu-cli -- decompile fixtures/locals.o stash  # recovers a stack local
+cargo run -p gu-cli -- decompile fixtures/types.o byte_sum # recovers pointer & byte types
 cargo run -p gu-cli -- demo   fixtures/sum.o # incremental recomputation demo
 
 # Stripped linked executable: no symbols, functions found by recursive
@@ -84,6 +85,26 @@ long fn_11134(long a0) {        // alpha
 }
 ```
 
+Types and widths are recovered from how values are used. In `byte_sum`,
+`a0` is added to an index and dereferenced as a byte, so it comes back a
+`unsigned char *`, and the loaded value is an `unsigned char`:
+
+```c
+long byte_sum(unsigned char *a0, long a1) {
+    long t0;
+    long t1;
+    unsigned char t3;
+    t0 = 0;
+    t1 = 0;
+    while (t1 < a1) {
+        t3 = *(uint8_t*)((a0 + t1));
+        t0 = (t0 + t3);
+        t1 = (t1 + 1);
+    }
+    return t0;
+}
+```
+
 The `demo` command shows the incremental engine: it warms the cache, renames
 a function, and shows in the query log that only listings displaying that
 name re-render — decoding, lifting, and unrelated listings are reused.
@@ -96,6 +117,7 @@ llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o sum.o sum.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o consts.o consts.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o branch.o branch.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o locals.o locals.s
+llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o types.o types.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o calls.tmp.o calls.s
 ld.lld -e _start -o calls calls.tmp.o && rm calls.tmp.o
 llvm-objcopy --strip-all calls calls_stripped

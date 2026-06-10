@@ -1,33 +1,103 @@
 //! Renders the structured high-level IR as C-like pseudocode.
 
 use crate::hir::{HExpr, HStmt};
-use crate::vars::Signature;
 use gu_ir::{BinOp, CmpOp, UnOp};
 use std::collections::HashSet;
 use std::fmt::Write as _;
 
+/// Renders a function. `params` and `decls` are `(c_type, name)` pairs.
 pub fn emit(
     name: &str,
     entry: u64,
-    sig: &Signature,
-    locals: &[String],
+    ret: &str,
+    params: &[(String, String)],
+    decls: &[(String, String)],
     body: &[HStmt],
 ) -> String {
     let mut targeted = HashSet::new();
     collect_goto_targets(body, &mut targeted);
 
-    let params: Vec<String> = sig.params.iter().map(|p| format!("long {p}")).collect();
-    let param_list = if params.is_empty() { "void".to_string() } else { params.join(", ") };
+    let param_list = if params.is_empty() {
+        "void".to_string()
+    } else {
+        params.iter().map(|(t, n)| decl(t, n)).collect::<Vec<_>>().join(", ")
+    };
 
     let mut out = String::new();
     let _ = writeln!(out, "// {name} @ {entry:#x}");
-    let _ = writeln!(out, "{} {name}({param_list}) {{", sig.return_type());
-    for local in locals {
-        let _ = writeln!(out, "    long {local};");
+    let _ = writeln!(out, "{ret} {name}({param_list}) {{");
+    for (ty, n) in decls {
+        let _ = writeln!(out, "    {};", decl(ty, n));
     }
     emit_block(body, 1, &targeted, &mut out);
     let _ = writeln!(out, "}}");
     out
+}
+
+/// Joins a C type and a name without a stray space after a pointer `*`
+/// (`unsigned char *p`, not `unsigned char * p`).
+fn decl(ty: &str, name: &str) -> String {
+    if ty.ends_with('*') {
+        format!("{ty}{name}")
+    } else {
+        format!("{ty} {name}")
+    }
+}
+
+/// Variable names appearing in the body, as assignment targets or operands —
+/// the set needing local declarations (minus parameters and stack slots).
+pub fn referenced_vars(body: &[HStmt]) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut seen = HashSet::new();
+    let mut add = |n: &str, names: &mut Vec<String>| {
+        if seen.insert(n.to_string()) {
+            names.push(n.to_string());
+        }
+    };
+    fn walk_expr(e: &HExpr, f: &mut dyn FnMut(&str)) {
+        match e {
+            HExpr::Var(n) => f(n),
+            HExpr::Bin(_, a, b) | HExpr::Cmp(_, a, b) => {
+                walk_expr(a, f);
+                walk_expr(b, f);
+            }
+            HExpr::Un(_, v) => walk_expr(v, f),
+            HExpr::Load { addr, .. } => walk_expr(addr, f),
+            HExpr::Const(_) => {}
+        }
+    }
+    fn walk(stmts: &[HStmt], f: &mut dyn FnMut(&str)) {
+        for s in stmts {
+            match s {
+                HStmt::Assign(n, e) => {
+                    f(n);
+                    walk_expr(e, f);
+                }
+                HStmt::Store { addr, val, .. } => {
+                    walk_expr(addr, f);
+                    walk_expr(val, f);
+                }
+                HStmt::Call { args, .. } => args.iter().for_each(|a| walk_expr(a, f)),
+                HStmt::CallIndirect { target, args } => {
+                    walk_expr(target, f);
+                    args.iter().for_each(|a| walk_expr(a, f));
+                }
+                HStmt::Return(Some(e)) | HStmt::IndirectJump(e) => walk_expr(e, f),
+                HStmt::If { cond, then_body, else_body } => {
+                    walk_expr(cond, f);
+                    walk(then_body, f);
+                    walk(else_body, f);
+                }
+                HStmt::While { cond, body } => {
+                    walk_expr(cond, f);
+                    walk(body, f);
+                }
+                _ => {}
+            }
+        }
+    }
+    walk(body, &mut |n| add(n, &mut names));
+    names
 }
 
 fn collect_goto_targets(stmts: &[HStmt], out: &mut HashSet<u64>) {

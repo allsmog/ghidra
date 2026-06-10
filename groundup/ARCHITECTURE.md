@@ -115,7 +115,12 @@ Roadmap, roughly in order:
    fixpoint over the call graph (the `arities()` query) so call sites render
    the right arguments and a function's signature accounts for arguments it
    forwards to callees (`alpha` forwards `a0 + 1` to `beta`, so both take
-   `a0`). Remaining: real types and widths, struct/array layout.
+   `a0`). *Types and widths are now recovered* (`gu-decompile/types.rs`): a
+   type lattice (`int`/`unsigned char`/pointers...) is inferred from load
+   widths, address use, and pointer arithmetic, propagated to a fixpoint;
+   parameters are typed from their incoming value so register reuse can't
+   pollute them (`byte_sum`'s `a0` recovers as `unsigned char *`). Remaining:
+   struct and array layout, and signedness from comparison operators.
 8. **UI client** — listing/graph/decompiler views over the API.
 
 ## Influences
