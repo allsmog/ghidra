@@ -37,6 +37,7 @@ cargo run -p gu-cli -- decompile fixtures/locals.o stash  # recovers a stack loc
 cargo run -p gu-cli -- decompile fixtures/types.o byte_sum # recovers pointer & byte types
 cargo run -p gu-cli -- decompile fixtures/array.o word_sum # recovers array indexing (a0[i])
 cargo run -p gu-cli -- decompile fixtures/struct.o pair_sum # recovers struct fields (a0->field_8)
+cargo run -p gu-cli -- decompile fixtures/switch_stripped fn_11138 # recovers a switch
 cargo run -p gu-cli -- demo   fixtures/sum.o # incremental recomputation demo
 
 # Stripped linked executable: no symbols, functions found by recursive
@@ -140,6 +141,27 @@ long pair_sum(long *a0) {
     a0->field_10 = (t0 + t1);
     a0 = a0->field_10;
     return a0;
+}
+```
+
+An indirect jump through a resolved jump table structures as a `switch`.
+The `dispatch` function's `auipc`/`ld`/`jalr` table dispatch — with the
+case blocks reachable only through the table — becomes:
+
+```c
+long fn_11138(long a0) {
+    if (a0 >= 3) {
+        return -1;
+    } else {
+        switch (a0) {
+        case 0:
+            return 0xa;
+        case 1:
+            return 0x14;
+        case 2:
+            return 0x1e;
+        }
+    }
 }
 ```
 

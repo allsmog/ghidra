@@ -90,6 +90,12 @@ impl Structurer<'_> {
                     out.push(HStmt::IndirectJump(e));
                     cur = None;
                 }
+                Term::Switch { value, cases } => {
+                    out.push(self.emit_switch(value, &cases, ctx));
+                    // Every case body ends in its own terminator (the cases
+                    // here return), so control does not fall out of the switch.
+                    cur = None;
+                }
                 Term::Sink => cur = None,
                 Term::Jump(t) | Term::Fall(t) => cur = self.a.index.get(&t).copied(),
                 Term::Cond { cond, taken } => {
@@ -98,6 +104,26 @@ impl Structurer<'_> {
             }
         }
         out
+    }
+
+    /// Structures a resolved jump table: each table entry becomes a `case`
+    /// whose body is the structured region of the target block. Distinct
+    /// targets sharing a block (a target listed for several indices) collapse
+    /// into one case body listing all its indices.
+    fn emit_switch(&mut self, value: String, cases: &[u64], ctx: Option<LoopCtx>) -> HStmt {
+        let mut bodies: Vec<(usize, Vec<HStmt>)> = Vec::new();
+        for (i, &target) in cases.iter().enumerate() {
+            let Some(idx) = self.a.index.get(&target).copied() else { continue };
+            if self.visited.contains(&idx) {
+                // A target shared with an earlier case: just a fallthrough
+                // label, rendered as an extra case index with an empty body.
+                bodies.push((i, vec![HStmt::Goto(target)]));
+                continue;
+            }
+            let body = self.seq(idx, None, ctx);
+            bodies.push((i, body));
+        }
+        HStmt::Switch { value, cases: bodies }
     }
 
     fn emit_if(

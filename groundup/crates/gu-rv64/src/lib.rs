@@ -10,7 +10,7 @@
 
 mod lift;
 
-pub use lift::{lift_function, Lifter};
+pub use lift::{lift_function, lift_function_with_tables, Lifter};
 
 pub const REG_NAMES: [&str; 32] = [
     "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3", "a4",

@@ -3,7 +3,7 @@
 
 use crate::{Insn, Mnemonic};
 use gu_ir::{BinOp, Block, CmpOp, Expr, LiftedFn, Stmt, UnOp, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const REG_RA: u8 = 1;
 
@@ -193,6 +193,18 @@ impl Lifter {
 /// Builds a CFG over the instructions of one function and lifts each basic
 /// block. `insns` must be the function's instructions in address order.
 pub fn lift_function(name: &str, insns: &[Insn]) -> LiftedFn {
+    lift_function_with_tables(name, insns, &BTreeMap::new())
+}
+
+/// Lifts a function, treating each indirect jump listed in `jump_tables`
+/// (address -> resolved target addresses) as a multi-way branch to those
+/// targets. This is what connects a resolved switch to its case blocks so
+/// they survive into the CFG and SSA.
+pub fn lift_function_with_tables(
+    name: &str,
+    insns: &[Insn],
+    jump_tables: &BTreeMap<u64, Vec<u64>>,
+) -> LiftedFn {
     let Some(first) = insns.first() else {
         return LiftedFn { name: name.to_string(), entry: 0, blocks: Vec::new() };
     };
@@ -200,8 +212,9 @@ pub fn lift_function(name: &str, insns: &[Insn]) -> LiftedFn {
     let end = insns.last().map(|i| i.addr + 4).unwrap_or(entry);
     let in_range = |a: u64| a >= entry && a < end;
 
-    // Block leaders: the entry, every in-range branch target, and every
-    // instruction following a block terminator.
+    // Block leaders: the entry, every in-range branch target, every
+    // instruction following a block terminator, and every resolved jump
+    // table case target.
     let mut leaders: BTreeSet<u64> = BTreeSet::new();
     leaders.insert(entry);
     for insn in insns {
@@ -212,6 +225,9 @@ pub fn lift_function(name: &str, insns: &[Insn]) -> LiftedFn {
         }
         if insn.is_block_end() && in_range(insn.addr + 4) {
             leaders.insert(insn.addr + 4);
+        }
+        if let Some(targets) = jump_tables.get(&insn.addr) {
+            leaders.extend(targets.iter().copied().filter(|&t| in_range(t)));
         }
     }
 
@@ -246,7 +262,13 @@ pub fn lift_function(name: &str, insns: &[Insn]) -> LiftedFn {
                         s
                     }
                     Jal => last.branch_target().filter(|&t| in_range(t)).into_iter().collect(),
-                    _ => Vec::new(), // returns and indirect jumps
+                    // A resolved indirect jump branches to its table targets.
+                    Jalr if jump_tables.contains_key(&last.addr) => jump_tables[&last.addr]
+                        .iter()
+                        .copied()
+                        .filter(|&t| in_range(t))
+                        .collect(),
+                    _ => Vec::new(), // returns and unresolved indirect jumps
                 }
             }
             Some(_) if in_range(block_end) => vec![block_end],

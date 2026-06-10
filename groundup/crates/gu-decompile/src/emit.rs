@@ -96,6 +96,11 @@ pub fn referenced_vars(body: &[HStmt]) -> Vec<String> {
                     walk_expr(cond, f);
                     walk(body, f);
                 }
+                HStmt::Switch { cases, .. } => {
+                    for (_, body) in cases {
+                        walk(body, f);
+                    }
+                }
                 _ => {}
             }
         }
@@ -115,6 +120,11 @@ fn collect_goto_targets(stmts: &[HStmt], out: &mut HashSet<u64>) {
                 collect_goto_targets(else_body, out);
             }
             HStmt::While { body, .. } => collect_goto_targets(body, out),
+            HStmt::Switch { cases, .. } => {
+                for (_, body) in cases {
+                    collect_goto_targets(body, out);
+                }
+            }
             _ => {}
         }
     }
@@ -188,6 +198,14 @@ fn emit_block(stmts: &[HStmt], level: usize, targeted: &HashSet<u64>, out: &mut 
             HStmt::While { cond, body } => {
                 let _ = writeln!(out, "{pad}while ({}) {{", fmt_expr(cond));
                 emit_block(body, level + 1, targeted, out);
+                let _ = writeln!(out, "{pad}}}");
+            }
+            HStmt::Switch { value, cases } => {
+                let _ = writeln!(out, "{pad}switch ({value}) {{");
+                for (i, body) in cases {
+                    let _ = writeln!(out, "{pad}case {i}:");
+                    emit_block(body, level + 1, targeted, out);
+                }
                 let _ = writeln!(out, "{pad}}}");
             }
         }

@@ -80,6 +80,25 @@ fn jump_table_targets_are_annotated_in_the_listing() {
 }
 
 #[test]
+fn jump_table_decompiles_to_a_switch() {
+    let mut k = Kernel::new(SWITCH.to_vec());
+    let dispatch = k.functions().unwrap()[0].entry;
+    let c = k.decompile(dispatch).unwrap();
+
+    // The indirect jump structures as a switch over the recovered index, and
+    // each case returns its constant.
+    assert!(c.contains("switch (a0)"), "no switch recovered:\n{c}");
+    assert!(c.contains("case 0:") && c.contains("return 0xa"), "case 0 wrong:\n{c}");
+    assert!(c.contains("case 1:") && c.contains("return 0x14"), "case 1 wrong:\n{c}");
+    assert!(c.contains("case 2:") && c.contains("return 0x1e"), "case 2 wrong:\n{c}");
+    // The bounds check is the default path.
+    assert!(c.contains("if (a0 >= 3)"), "bounds check lost:\n{c}");
+    // The dead table-load was cleaned up.
+    assert!(!c.contains("0x10120"), "dead table load remains:\n{c}");
+    assert!(!c.contains("goto *"), "indirect jump not structured:\n{c}");
+}
+
+#[test]
 fn renames_work_on_discovered_functions() {
     let mut k = Kernel::new(CALLS_STRIPPED.to_vec());
     k.functions().unwrap();

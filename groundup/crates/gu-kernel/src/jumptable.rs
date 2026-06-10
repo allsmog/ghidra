@@ -28,17 +28,31 @@ enum Val {
     Unknown,
     /// A known absolute address/constant.
     Const(i64),
-    /// `base + <unknown index>` — a pointer into a table at `base`.
-    TablePtr(i64),
-    /// A value loaded from the table beginning at `base`.
-    TableElem(i64),
+    /// `base + <index in register r>` — a pointer into a table at `base`.
+    TablePtr { base: i64, index: u16 },
+    /// A value loaded from the table beginning at `base`, indexed by `r`.
+    TableElem { base: i64, index: u16 },
+}
+
+/// A resolved jump table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JumpTable {
+    /// Address of the indirect jump instruction.
+    pub jump_addr: u64,
+    /// Case target addresses, in table order.
+    pub targets: Vec<u64>,
+    /// The register holding the switch index (before scaling), if recovered.
+    pub index_reg: Option<u16>,
 }
 
 /// Resolves every indirect jump in `insns` that matches the jump-table
-/// pattern. Returns `(jump_instruction_address, sorted_target_addresses)`.
-pub fn resolve(elf: &Elf, insns: &[Insn]) -> Vec<(u64, Vec<u64>)> {
+/// pattern.
+pub fn resolve(elf: &Elf, insns: &[Insn]) -> Vec<JumpTable> {
     let mut regs = [Val::Unknown; 32];
     regs[0] = Val::Const(0); // x0 is hardwired to zero
+    // The pre-scaling source register of a shift/multiply, so the recovered
+    // index is the original variable (`a0`), not the scaled temporary.
+    let mut scale_src = [None; 32];
     let mut out = Vec::new();
 
     for insn in insns {
@@ -50,10 +64,14 @@ pub fn resolve(elf: &Elf, insns: &[Insn]) -> Vec<(u64, Vec<u64>)> {
         // An indirect jump (jalr zero, 0(rs1), rs1 != ra) through a
         // table-loaded value: read the table.
         if insn.mn == Jalr && insn.rd == 0 && insn.imm == 0 && insn.rs1 != 1 {
-            if let Val::TableElem(base) = rs1 {
+            if let Val::TableElem { base, index } = rs1 {
                 let targets = read_table(elf, base as u64);
                 if !targets.is_empty() {
-                    out.push((insn.addr, targets));
+                    out.push(JumpTable {
+                        jump_addr: insn.addr,
+                        targets,
+                        index_reg: Some(index),
+                    });
                 }
             }
         }
@@ -67,15 +85,18 @@ pub fn resolve(elf: &Elf, insns: &[Insn]) -> Vec<(u64, Vec<u64>)> {
             },
             Add => match (rs1, rs2) {
                 (Val::Const(a), Val::Const(b)) => Val::Const(a.wrapping_add(b)),
-                // base + index  ->  table pointer
-                (Val::Const(base), Val::Unknown) | (Val::Unknown, Val::Const(base)) => {
-                    Val::TablePtr(base)
+                // base + scaled index  ->  table pointer; recover the index.
+                (Val::Const(base), Val::Unknown) => {
+                    Val::TablePtr { base, index: orig_index(insn.rs2, &scale_src) }
+                }
+                (Val::Unknown, Val::Const(base)) => {
+                    Val::TablePtr { base, index: orig_index(insn.rs1, &scale_src) }
                 }
                 _ => Val::Unknown,
             },
             Ld => match rs1 {
-                Val::TablePtr(base) | Val::Const(base) => {
-                    Val::TableElem(base.wrapping_add(insn.imm))
+                Val::TablePtr { base, index } => {
+                    Val::TableElem { base: base.wrapping_add(insn.imm), index }
                 }
                 _ => Val::Unknown,
             },
@@ -83,12 +104,25 @@ pub fn resolve(elf: &Elf, insns: &[Insn]) -> Vec<(u64, Vec<u64>)> {
             _ => Val::Unknown,
         };
 
-        // Writes to x0 are discarded; everything else updates the register.
+        // Track scaling so the recovered index is the unscaled register.
+        if insn.mn == Slli && rd != 0 {
+            scale_src[rd] = Some(insn.rs1);
+        }
+
         if rd != 0 && writes_rd(insn.mn) {
             regs[rd] = next;
+            if insn.mn != Slli {
+                scale_src[rd] = None;
+            }
         }
     }
     out
+}
+
+/// The original (unscaled) index register: the source of a recorded shift,
+/// else the register itself.
+fn orig_index(reg: u8, scale_src: &[Option<u8>; 32]) -> u16 {
+    scale_src[reg as usize].unwrap_or(reg) as u16
 }
 
 /// Reads pointer-sized table entries starting at `base`, accepting each
@@ -135,9 +169,10 @@ mod tests {
 
         let resolved = resolve(&elf, &insns);
         assert_eq!(resolved.len(), 1, "one jump table expected: {resolved:?}");
-        let (jump_addr, ref targets) = resolved[0];
-        assert_eq!(jump_addr, entry + 0x1c, "jalr at dispatch+0x1c");
-        assert_eq!(targets, &[0x11158, 0x11160, 0x11168], "case addresses");
+        let table = &resolved[0];
+        assert_eq!(table.jump_addr, entry + 0x1c, "jalr at dispatch+0x1c");
+        assert_eq!(table.targets, [0x11158, 0x11160, 0x11168], "case addresses");
+        assert_eq!(table.index_reg, Some(10), "switch index is a0 (x10)");
     }
 
     #[test]

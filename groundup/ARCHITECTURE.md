@@ -95,8 +95,12 @@ Roadmap, roughly in order:
    (`gu-kernel/src/jumptable.rs`) recognizes the `auipc`/`addi`/`ld`/`jalr`
    switch-dispatch pattern, reads the target table out of the binary, and
    feeds the case addresses back into discovery (so blocks reachable only
-   through the table are explored) and into the listing (indirect jumps are
-   annotated with their cases). Remaining: bounds-check-driven entry counts,
+   through the table are explored), into the listing (indirect jumps are
+   annotated with their cases), and into the lifter — `lift_function_with_
+   tables` adds the case targets as CFG successors so they survive SSA
+   construction and the decompiler structures the jump as a `switch`
+   (`dispatch` becomes `switch (a0) { case 0: ...; }` with the dead table
+   load cleaned up). Remaining: bounds-check-driven entry counts,
    PIC/GOT-relative tables, and prologue heuristics for code reachable only
    by computed pointer.
 4. ~~**SSA + analyses on gu-ir** — SSA construction, constant propagation,

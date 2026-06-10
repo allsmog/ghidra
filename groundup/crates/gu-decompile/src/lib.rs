@@ -39,10 +39,14 @@ pub use vars::{arg_count, Signature};
 ///   render the right number of arguments and the function's own signature
 ///   accounts for arguments forwarded to callees. The kernel supplies this
 ///   from an interprocedural arity fixpoint; pass `|_| 0` for none.
+/// - `switch_of` resolves the address of an indirect jump to its jump-table
+///   cases and switch-index variable, so the jump structures as a `switch`.
+///   Pass `|_| None` for none.
 pub fn decompile(
     prog: &SsaProgram,
     name_of: &dyn Fn(u64) -> Option<String>,
     arity_of: &dyn Fn(u64) -> usize,
+    switch_of: &dyn Fn(u64) -> Option<(Vec<u64>, Option<String>)>,
 ) -> String {
     let sig = vars::signature(prog, arity_of);
     let stack = vars::stack_offsets(prog);
@@ -59,13 +63,16 @@ pub fn decompile(
     }
 
     let analysis = cfg::Analysis::new(prog);
-    let bodies = hir::lower_blocks(prog, &stack, name_of, arity_of);
+    let bodies = hir::lower_blocks(prog, &stack, name_of, arity_of, switch_of);
     let mut structured = structure::structure(prog, &analysis, &bodies);
 
     // Recognize struct fields / array indexing / pointer deref now that
     // types are known.
     let ptr_info = hir::PtrInfo { pointee_size: &|name| types.pointee_size(name) };
     hir::simplify_accesses(&mut structured, &ptr_info);
+    // Drop assignments left dead by structuring (e.g. a jump table's load
+    // once its indirect jump became a switch).
+    hir::remove_dead_assignments(&mut structured);
 
     // Local declarations: stack slots, then register variables that appear
     // in the body and are neither parameters nor stack slots.

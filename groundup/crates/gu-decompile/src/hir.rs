@@ -101,6 +101,9 @@ pub enum HStmt {
     While { cond: HExpr, body: Vec<HStmt> },
     Return(Option<HExpr>),
     IndirectJump(HExpr),
+    /// A resolved jump table: `switch (value) { case i: <body> ... }`, where
+    /// each case body is the structured region of a target block.
+    Switch { value: String, cases: Vec<(usize, Vec<HStmt>)> },
     /// `place = val;` where `place` is a recovered lvalue (field/index/deref).
     SetPlace { place: HExpr, val: HExpr },
     Goto(u64),
@@ -118,6 +121,9 @@ pub enum Term {
     Jump(u64),
     Return(Option<HExpr>),
     Indirect(HExpr),
+    /// A resolved jump table: the switch index variable and the case target
+    /// block addresses, in table order.
+    Switch { value: String, cases: Vec<u64> },
     /// Falls through to the single successor (no explicit terminator).
     Fall(u64),
     /// No successors and no return value (e.g. a syscall-exit tail).
@@ -163,11 +169,12 @@ pub fn lower_blocks(
     stack: &crate::vars::StackMap,
     name_of: &dyn Fn(u64) -> Option<String>,
     arity_of: &dyn Fn(u64) -> usize,
+    switch_of: &dyn Fn(u64) -> Option<(Vec<u64>, Option<String>)>,
 ) -> HashMap<u64, LowBlock> {
     let uses = global_uses(prog);
     prog.blocks
         .iter()
-        .map(|b| (b.start, lower_block(b, &uses, stack, name_of, arity_of)))
+        .map(|b| (b.start, lower_block(b, &uses, stack, name_of, arity_of, switch_of)))
         .collect()
 }
 
@@ -302,6 +309,7 @@ fn lower_block(
     stack: &crate::vars::StackMap,
     name_of: &dyn Fn(u64) -> Option<String>,
     arity_of: &dyn Fn(u64) -> usize,
+    switch_of: &dyn Fn(u64) -> Option<(Vec<u64>, Option<String>)>,
 ) -> LowBlock {
     let mut low = Lowerer { inlinable: HashMap::new(), stack };
     let mut body = Vec::new();
@@ -364,16 +372,23 @@ fn lower_block(
         }
     }
 
-    let term = match stmts.get(term_idx).map(|(_, s)| s) {
-        Some(SsaStmt::CondJump { op, lhs, rhs, target }) => Term::Cond {
+    let term = match stmts.get(term_idx) {
+        Some((_, SsaStmt::CondJump { op, lhs, rhs, target })) => Term::Cond {
             cond: HExpr::Cmp(*op, Box::new(low.val(*lhs)), Box::new(low.val(*rhs))),
             taken: *target,
         },
-        Some(SsaStmt::Jump { target }) => Term::Jump(*target),
-        Some(SsaStmt::Return { live_out }) => {
+        Some((_, SsaStmt::Jump { target })) => Term::Jump(*target),
+        Some((_, SsaStmt::Return { live_out })) => {
             Term::Return(live_out.first().map(|v| low.val(*v)))
         }
-        Some(SsaStmt::JumpIndirect { addr }) => Term::Indirect(low.val(*addr)),
+        Some((addr, SsaStmt::JumpIndirect { addr: target })) => match switch_of(*addr) {
+            // A resolved jump table: structure it as a switch.
+            Some((cases, index)) if !cases.is_empty() => Term::Switch {
+                value: index.unwrap_or_else(|| "/* index */".to_string()),
+                cases,
+            },
+            _ => Term::Indirect(low.val(*target)),
+        },
         _ => match block.succs.first() {
             Some(&s) => Term::Fall(s),
             None => Term::Sink,
@@ -381,6 +396,119 @@ fn lower_block(
     };
 
     LowBlock { body, term }
+}
+
+/// Removes assignments to variables that are never read anywhere in the
+/// function. Iterated to a fixpoint, since removing one dead assignment can
+/// make the values it read dead in turn. Expressions here have no side
+/// effects, so a write whose result is unused is safe to drop — this clears
+/// out, e.g., the table-load left behind once an indirect jump becomes a
+/// `switch`.
+pub fn remove_dead_assignments(stmts: &mut Vec<HStmt>) {
+    loop {
+        let mut reads = HashSet::new();
+        collect_reads(stmts, &mut reads);
+        if !drop_dead(stmts, &reads) {
+            break;
+        }
+    }
+}
+
+/// Variable names that appear as reads (operands), excluding plain
+/// assignment targets.
+fn collect_reads(stmts: &[HStmt], reads: &mut HashSet<String>) {
+    for stmt in stmts {
+        match stmt {
+            // The LHS name of a plain assignment is a write, not a read.
+            HStmt::Assign(_, e) | HStmt::Return(Some(e)) | HStmt::IndirectJump(e) => {
+                collect_expr_vars(e, reads)
+            }
+            HStmt::Store { addr, val, .. } => {
+                collect_expr_vars(addr, reads);
+                collect_expr_vars(val, reads);
+            }
+            HStmt::SetPlace { place, val } => {
+                collect_expr_vars(place, reads);
+                collect_expr_vars(val, reads);
+            }
+            HStmt::Call { args, .. } => args.iter().for_each(|e| collect_expr_vars(e, reads)),
+            HStmt::CallIndirect { target, args } => {
+                collect_expr_vars(target, reads);
+                args.iter().for_each(|e| collect_expr_vars(e, reads));
+            }
+            HStmt::Switch { value, cases } => {
+                reads.insert(value.clone());
+                for (_, body) in cases {
+                    collect_reads(body, reads);
+                }
+            }
+            HStmt::If { cond, then_body, else_body } => {
+                collect_expr_vars(cond, reads);
+                collect_reads(then_body, reads);
+                collect_reads(else_body, reads);
+            }
+            HStmt::While { cond, body } => {
+                collect_expr_vars(cond, reads);
+                collect_reads(body, reads);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_expr_vars(e: &HExpr, out: &mut HashSet<String>) {
+    match e {
+        HExpr::Var(n) => {
+            out.insert(n.clone());
+        }
+        HExpr::Bin(_, a, b) | HExpr::Cmp(_, a, b) | HExpr::Index(a, b) => {
+            collect_expr_vars(a, out);
+            collect_expr_vars(b, out);
+        }
+        HExpr::Un(_, v) | HExpr::Deref(v) | HExpr::Field(v, _) => collect_expr_vars(v, out),
+        HExpr::Load { addr, .. } => collect_expr_vars(addr, out),
+        HExpr::Const(_) => {}
+    }
+}
+
+/// Drops dead assignments in place; returns whether any were removed.
+fn drop_dead(stmts: &mut Vec<HStmt>, reads: &HashSet<String>) -> bool {
+    let before = count_stmts(stmts);
+    stmts.retain(|s| !matches!(s, HStmt::Assign(name, _) if !reads.contains(name)));
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            HStmt::If { then_body, else_body, .. } => {
+                drop_dead(then_body, reads);
+                drop_dead(else_body, reads);
+            }
+            HStmt::While { body, .. } => {
+                drop_dead(body, reads);
+            }
+            HStmt::Switch { cases, .. } => {
+                for (_, body) in cases.iter_mut() {
+                    drop_dead(body, reads);
+                }
+            }
+            _ => {}
+        }
+    }
+    count_stmts(stmts) != before
+}
+
+fn count_stmts(stmts: &[HStmt]) -> usize {
+    stmts
+        .iter()
+        .map(|s| match s {
+            HStmt::If { then_body, else_body, .. } => {
+                1 + count_stmts(then_body) + count_stmts(else_body)
+            }
+            HStmt::While { body, .. } => 1 + count_stmts(body),
+            HStmt::Switch { cases, .. } => {
+                1 + cases.iter().map(|(_, b)| count_stmts(b)).sum::<usize>()
+            }
+            _ => 1,
+        })
+        .sum()
 }
 
 /// Information the access-recovery pass needs about pointer variables.
@@ -457,6 +585,11 @@ fn collect_struct_bases(stmts: &[HStmt], info: &PtrInfo, out: &mut HashSet<Strin
                 collect_struct_bases(else_body, info, out);
             }
             HStmt::While { body, .. } => collect_struct_bases(body, info, out),
+            HStmt::Switch { cases, .. } => {
+                for (_, body) in cases {
+                    collect_struct_bases(body, info, out);
+                }
+            }
             _ => {}
         }
     }
@@ -565,6 +698,11 @@ fn rewrite_stmts(stmts: &mut [HStmt], info: &PtrInfo, structs: &HashSet<String>)
             HStmt::While { cond, body } => {
                 rewrite_expr(cond, info, structs);
                 rewrite_stmts(body, info, structs);
+            }
+            HStmt::Switch { cases, .. } => {
+                for (_, body) in cases.iter_mut() {
+                    rewrite_stmts(body, info, structs);
+                }
             }
             _ => {}
         }

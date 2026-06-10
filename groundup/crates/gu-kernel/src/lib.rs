@@ -26,7 +26,7 @@ mod jumptable;
 
 use gu_elf::{Elf, ElfError};
 use gu_ir::LiftedFn;
-use gu_rv64::{decode_all, lift_function, Insn, Mnemonic};
+use gu_rv64::{decode_all, Insn, Mnemonic};
 use gu_ssa::SsaProgram;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -395,7 +395,22 @@ impl Kernel {
                     .ok_or(KernelError::NoSuchFunction(entry))?
                     .name;
                 let insns = self.insns(entry)?;
-                Ok(Output::Lifted(lift_function(&symbol_name, &insns)))
+                // Resolve jump tables so the CFG connects each indirect jump
+                // to its case blocks (otherwise they are pruned as
+                // unreachable during SSA construction).
+                self.read_binary();
+                let tables: std::collections::BTreeMap<u64, Vec<u64>> = {
+                    let elf = Elf::parse(&self.binary)?;
+                    jumptable::resolve(&elf, &insns)
+                        .into_iter()
+                        .map(|t| (t.jump_addr, t.targets))
+                        .collect()
+                };
+                Ok(Output::Lifted(gu_rv64::lift_function_with_tables(
+                    &symbol_name,
+                    &insns,
+                    &tables,
+                )))
             }
             Query::DisplayName(addr) => {
                 let name = match self.read_name(addr) {
@@ -455,10 +470,28 @@ impl Kernel {
                 let names: HashMap<u64, String> =
                     self.functions()?.into_iter().map(|f| (f.entry, f.name)).collect();
                 let arities = self.arities()?;
+
+                // Resolve jump tables so indirect jumps structure as switches.
+                let insns = self.insns(entry)?;
+                self.read_binary();
+                let switches: HashMap<u64, (Vec<u64>, Option<String>)> = {
+                    let elf = Elf::parse(&self.binary)?;
+                    jumptable::resolve(&elf, &insns)
+                        .into_iter()
+                        .map(|t| {
+                            let index = t.index_reg.and_then(|r| {
+                                gu_rv64::REG_NAMES.get(r as usize).map(|n| n.to_string())
+                            });
+                            (t.jump_addr, (t.targets, index))
+                        })
+                        .collect()
+                };
+
                 let text = gu_decompile::decompile(
                     &opt,
                     &|a| names.get(&a).cloned(),
                     &|a| arities.get(&a).copied().unwrap_or(0),
+                    &|a| switches.get(&a).cloned(),
                 );
                 Ok(Output::Decompiled(text))
             }
@@ -484,7 +517,10 @@ impl Kernel {
         self.read_binary();
         let jump_targets: std::collections::HashMap<u64, Vec<u64>> = {
             let elf = Elf::parse(&self.binary)?;
-            jumptable::resolve(&elf, &insns).into_iter().collect()
+            jumptable::resolve(&elf, &insns)
+                .into_iter()
+                .map(|t| (t.jump_addr, t.targets))
+                .collect()
         };
 
         let call_target = |insn: &Insn| -> Option<u64> {

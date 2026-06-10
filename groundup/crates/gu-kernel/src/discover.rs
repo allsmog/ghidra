@@ -126,8 +126,8 @@ fn resolve_jump_tables(elf: &Elf, entries: &BTreeSet<u64>) -> BTreeMap<u64, Vec<
             }
             addr += 4;
         }
-        for (jump_addr, targets) in crate::jumptable::resolve(elf, &insns) {
-            jumps.insert(jump_addr, targets);
+        for table in crate::jumptable::resolve(elf, &insns) {
+            jumps.insert(table.jump_addr, table.targets);
         }
     }
     jumps
