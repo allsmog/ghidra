@@ -62,6 +62,23 @@ fn interprocedural_arity_threads_arguments_through_the_call_graph() {
     assert!(start.contains("fn_11134(5)"), "constant arg not passed:\n{start}");
 }
 
+const SWITCH: &[u8] = include_bytes!("../../../fixtures/switch_stripped");
+
+#[test]
+fn jump_table_targets_are_annotated_in_the_listing() {
+    let mut k = Kernel::new(SWITCH.to_vec());
+    let funcs = k.functions().unwrap();
+    let dispatch = funcs[0].entry;
+
+    let listing = k.listing(dispatch).unwrap();
+    // The indirect jump is annotated with the resolved case addresses read
+    // from the .rodata table.
+    assert!(
+        listing.contains("# switch -> 0x11158, 0x11160, 0x11168"),
+        "jump table not resolved:\n{listing}"
+    );
+}
+
 #[test]
 fn renames_work_on_discovered_functions() {
     let mut k = Kernel::new(CALLS_STRIPPED.to_vec());

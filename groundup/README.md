@@ -43,6 +43,10 @@ cargo run -p gu-cli -- demo   fixtures/sum.o # incremental recomputation demo
 # descent from the entry point.
 cargo run -p gu-cli -- info   fixtures/calls_stripped
 cargo run -p gu-cli -- disasm fixtures/calls_stripped fn_11120
+
+# Jump table resolved from .rodata: the indirect jump is annotated with
+# its switch cases (value-set analysis over the dispatch pattern).
+cargo run -p gu-cli -- disasm fixtures/switch_stripped fn_11138
 ```
 
 `decompile` is the end of the pipeline. The eight raw RV64 instructions of
@@ -157,4 +161,7 @@ llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o struct.o struct.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o calls.tmp.o calls.s
 ld.lld -e _start -o calls calls.tmp.o && rm calls.tmp.o
 llvm-objcopy --strip-all calls calls_stripped
+llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o switch.tmp.o switch.s
+ld.lld -e dispatch -o switch switch.tmp.o && rm switch.tmp.o
+llvm-objcopy --strip-all switch switch_stripped
 ```

@@ -39,7 +39,12 @@ struct Walk {
 /// Explores the instruction stream from `entry`, following intra-function
 /// control flow. Paths end at returns, indirect jumps, undecodable bytes,
 /// unmapped addresses, and (when `stop_at` is given) other function entries.
-fn explore(elf: &Elf, entry: u64, stop_at: Option<&BTreeSet<u64>>) -> Walk {
+fn explore(
+    elf: &Elf,
+    entry: u64,
+    stop_at: Option<&BTreeSet<u64>>,
+    jumps: &BTreeMap<u64, Vec<u64>>,
+) -> Walk {
     let mut walk = Walk { visited: BTreeSet::new(), callees: BTreeSet::new() };
     let mut work = vec![entry];
 
@@ -90,13 +95,42 @@ fn explore(elf: &Elf, entry: u64, stop_at: Option<&BTreeSet<u64>>) -> Walk {
             Mnemonic::Jalr => {
                 if insn.rd == 1 {
                     work.push(next); // indirect call returns here
+                } else if let Some(targets) = jumps.get(&addr) {
+                    // Resolved jump table: the case blocks are in-function
+                    // edges. This is what makes them reachable at all.
+                    work.extend(targets.iter().copied());
                 }
-                // rd == 0: return or indirect jump — path ends.
+                // Otherwise rd == 0: return or unresolved indirect jump —
+                // the path ends here.
             }
             _ => work.push(next),
         }
     }
     walk
+}
+
+/// Resolves jump tables for every function, keyed by the address of the
+/// indirect jump. Each function is decoded linearly from its entry up to the
+/// next entry, which is enough to recognize the dispatch pattern.
+fn resolve_jump_tables(elf: &Elf, entries: &BTreeSet<u64>) -> BTreeMap<u64, Vec<u64>> {
+    let ordered: Vec<u64> = entries.iter().copied().collect();
+    let mut jumps = BTreeMap::new();
+    for (i, &entry) in ordered.iter().enumerate() {
+        let end = ordered.get(i + 1).copied().unwrap_or(u64::MAX);
+        let mut insns = Vec::new();
+        let mut addr = entry;
+        while addr < end && insns.len() < MAX_INSNS_PER_FN {
+            match fetch(elf, addr) {
+                Some(insn) if insn.mn != Mnemonic::Unknown => insns.push(insn),
+                _ => break,
+            }
+            addr += 4;
+        }
+        for (jump_addr, targets) in crate::jumptable::resolve(elf, &insns) {
+            jumps.insert(jump_addr, targets);
+        }
+    }
+    jumps
 }
 
 /// Discovers functions in a linked binary: named symbols plus everything
@@ -112,21 +146,27 @@ pub fn discover(elf: &Elf) -> Vec<FuncInfo> {
         entries.insert(elf.header.entry);
     }
 
+    let no_jumps = BTreeMap::new();
+
     // Phase 1: chase call targets to a fixpoint.
     let mut queue: Vec<u64> = entries.iter().copied().collect();
     while let Some(entry) = queue.pop() {
-        for callee in explore(elf, entry, None).callees {
+        for callee in explore(elf, entry, None, &no_jumps).callees {
             if elf.exec_segment_at(callee).is_some() && entries.insert(callee) {
                 queue.push(callee);
             }
         }
     }
 
+    // Phase 1.5: resolve jump tables now that the entry set bounds each
+    // function's instruction span, so case blocks become reachable below.
+    let jumps = resolve_jump_tables(elf, &entries);
+
     // Phase 2: measure each function, clipped at every other entry.
     entries
         .iter()
         .map(|&entry| {
-            let walk = explore(elf, entry, Some(&entries));
+            let walk = explore(elf, entry, Some(&entries), &jumps);
             let size = walk.visited.last().map(|&last| last + 4 - entry).unwrap_or(0);
             let name = names
                 .get(&entry)

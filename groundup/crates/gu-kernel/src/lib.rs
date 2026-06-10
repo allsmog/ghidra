@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 mod discover;
+mod jumptable;
 
 use gu_elf::{Elf, ElfError};
 use gu_ir::LiftedFn;
@@ -478,6 +479,14 @@ impl Kernel {
             .clone();
         let insns = self.insns(entry)?;
 
+        // Resolve any jump tables so indirect jumps can be annotated with
+        // their case targets.
+        self.read_binary();
+        let jump_targets: std::collections::HashMap<u64, Vec<u64>> = {
+            let elf = Elf::parse(&self.binary)?;
+            jumptable::resolve(&elf, &insns).into_iter().collect()
+        };
+
         let call_target = |insn: &Insn| -> Option<u64> {
             (insn.mn == Mnemonic::Jal && insn.rd == 1)
                 .then(|| insn.branch_target())
@@ -503,6 +512,10 @@ impl Kernel {
             let mut line = format!("  {:#06x}: {:08x}  {}", insn.addr, insn.raw, insn.disasm());
             if let Some(callee) = call_target(insn).and_then(|t| names.get(&t)) {
                 let _ = write!(line, "   # call {callee}");
+            }
+            if let Some(targets) = jump_targets.get(&insn.addr) {
+                let cases: Vec<String> = targets.iter().map(|t| format!("{t:#x}")).collect();
+                let _ = write!(line, "   # switch -> {}", cases.join(", "));
             }
             out.push_str(&line);
             out.push('\n');

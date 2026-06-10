@@ -90,8 +90,15 @@ Roadmap, roughly in order:
    and Mach-O loaders under the same safety rules.
 3. ~~**Function discovery beyond symbols** — recursive descent from entry
    points and call targets, with measured extents.~~ Done (see
-   `gu-kernel/src/discover.rs`; stripped binaries analyze fully). Remaining:
-   prologue heuristics for code only reachable indirectly.
+   `gu-kernel/src/discover.rs`; stripped binaries analyze fully).
+   *Jump-table resolution closes the loop:* a value-set analysis
+   (`gu-kernel/src/jumptable.rs`) recognizes the `auipc`/`addi`/`ld`/`jalr`
+   switch-dispatch pattern, reads the target table out of the binary, and
+   feeds the case addresses back into discovery (so blocks reachable only
+   through the table are explored) and into the listing (indirect jumps are
+   annotated with their cases). Remaining: bounds-check-driven entry counts,
+   PIC/GOT-relative tables, and prologue heuristics for code reachable only
+   by computed pointer.
 4. ~~**SSA + analyses on gu-ir** — SSA construction, constant propagation,
    dead-code elimination.~~ Done (`gu-ssa`: dominator-tree phi placement,
    renaming, a constant lattice, folding, and DCE; calls model clobbers,
