@@ -116,6 +116,8 @@ pub enum Query {
     Lifted(u64),
     Ssa(u64),
     OptSsa(u64),
+    /// Interprocedural parameter count per function, by call-graph fixpoint.
+    Arities,
     Decompile(u64),
     /// The name an address should display as: model override, else symbol.
     /// A query of its own so that redundant model edits get early-cutoff.
@@ -131,6 +133,7 @@ impl fmt::Display for Query {
             Query::Lifted(a) => write!(f, "lifted({a:#x})"),
             Query::Ssa(a) => write!(f, "ssa({a:#x})"),
             Query::OptSsa(a) => write!(f, "opt_ssa({a:#x})"),
+            Query::Arities => write!(f, "arities()"),
             Query::Decompile(a) => write!(f, "decompile({a:#x})"),
             Query::DisplayName(a) => write!(f, "display_name({a:#x})"),
             Query::Listing(a) => write!(f, "listing({a:#x})"),
@@ -159,6 +162,7 @@ enum Output {
     Insns(Vec<Insn>),
     Lifted(LiftedFn),
     Ssa(SsaProgram),
+    Arities(HashMap<u64, usize>),
     Name(Option<String>),
     Listing(String),
     Decompiled(String),
@@ -413,14 +417,48 @@ impl Kernel {
                 let ssa = self.ssa(entry)?;
                 Ok(Output::Ssa(gu_ssa::optimize(&ssa)))
             }
+            Query::Arities => {
+                // Interprocedural parameter-count fixpoint over the call
+                // graph. A call reads as many arguments as its callee takes,
+                // which can make a forwarded incoming argument a parameter of
+                // the caller too — so arities are mutually dependent. Arity
+                // is monotone and bounded by 8, so this converges.
+                let entries: Vec<u64> = self.functions()?.iter().map(|f| f.entry).collect();
+                let mut ssas: HashMap<u64, SsaProgram> = HashMap::new();
+                for e in &entries {
+                    ssas.insert(*e, self.opt_ssa(*e)?);
+                }
+                let mut arity: HashMap<u64, usize> =
+                    entries.iter().map(|&e| (e, 0)).collect();
+                loop {
+                    let mut changed = false;
+                    for e in &entries {
+                        let lookup = |t: u64| arity.get(&t).copied().unwrap_or(0);
+                        let new = gu_decompile::arg_count(&ssas[e], &lookup);
+                        if new != arity[e] {
+                            arity.insert(*e, new);
+                            changed = true;
+                        }
+                    }
+                    if !changed {
+                        break;
+                    }
+                }
+                Ok(Output::Arities(arity))
+            }
             Query::Decompile(entry) => {
                 let opt = self.opt_ssa(entry)?;
                 // Resolve call targets to symbol/discovered names. Using
                 // functions() (not model overrides) keeps decompilation
                 // byte-dependent, so it caches across renames.
-                let names: std::collections::HashMap<u64, String> =
+                let names: HashMap<u64, String> =
                     self.functions()?.into_iter().map(|f| (f.entry, f.name)).collect();
-                let text = gu_decompile::decompile(&opt, &|a| names.get(&a).cloned());
+                let arities = self.arities()?;
+                let text = gu_decompile::decompile(
+                    &opt,
+                    &|a| names.get(&a).cloned(),
+                    &|a| arities.get(&a).copied().unwrap_or(0),
+                );
                 Ok(Output::Decompiled(text))
             }
             Query::Listing(entry) => Ok(Output::Listing(self.compute_listing(entry)?)),
@@ -506,6 +544,13 @@ impl Kernel {
         match self.get(&Query::OptSsa(entry))? {
             Output::Ssa(v) => Ok(v),
             _ => panic!("opt_ssa() produced wrong output kind"),
+        }
+    }
+
+    pub fn arities(&mut self) -> Result<HashMap<u64, usize>> {
+        match self.get(&Query::Arities)? {
+            Output::Arities(v) => Ok(v),
+            _ => panic!("arities() produced wrong output kind"),
         }
     }
 

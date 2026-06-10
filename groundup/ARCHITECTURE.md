@@ -110,9 +110,12 @@ Roadmap, roughly in order:
    recovers stack locals (via a restricted value-set analysis over the
    stack pointer) and function signatures (parameters from live-in argument
    registers, `long`/`void` return). Remaining: real types and widths,
-   struct/array layout, and modeling call arguments (today calls clobber
-   but do not read argument registers, so inter-procedural argument passing
-   is invisible — see the `_start`/`alpha` decompilation).
+   struct/array layout. *Call arguments are now modeled:* SSA calls read
+   the argument registers, and the kernel runs an interprocedural arity
+   fixpoint over the call graph (the `arities()` query) so call sites render
+   the right arguments and a function's signature accounts for arguments it
+   forwards to callees (`alpha` forwards `a0 + 1` to `beta`, so both take
+   `a0`). Remaining: real types and widths, struct/array layout.
 8. **UI client** — listing/graph/decompiler views over the API.
 
 ## Influences

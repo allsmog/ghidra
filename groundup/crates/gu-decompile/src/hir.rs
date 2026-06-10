@@ -86,8 +86,8 @@ impl HExpr {
 pub enum HStmt {
     Assign(String, HExpr),
     Store { addr: HExpr, val: HExpr, size: u8 },
-    Call { name: String },
-    CallIndirect(HExpr),
+    Call { name: String, args: Vec<HExpr> },
+    CallIndirect { target: HExpr, args: Vec<HExpr> },
     SysCall,
     // --- inserted by the structurer ---
     If { cond: HExpr, then_body: Vec<HStmt>, else_body: Vec<HStmt> },
@@ -153,11 +153,12 @@ pub fn lower_blocks(
     prog: &SsaProgram,
     stack: &crate::vars::StackMap,
     name_of: &dyn Fn(u64) -> Option<String>,
+    arity_of: &dyn Fn(u64) -> usize,
 ) -> HashMap<u64, LowBlock> {
     let uses = global_uses(prog);
     prog.blocks
         .iter()
-        .map(|b| (b.start, lower_block(b, &uses, stack, name_of)))
+        .map(|b| (b.start, lower_block(b, &uses, stack, name_of, arity_of)))
         .collect()
 }
 
@@ -172,11 +173,17 @@ fn global_uses(prog: &SsaProgram) -> Uses {
             }
         }
         for (_, stmt) in &block.stmts {
-            visit_stmt_uses(stmt, &mut |v| {
+            let mut bump = |v: &SsaVal| {
                 if let Some(k) = v.key() {
                     uses.record(k, block.start, false);
                 }
-            });
+            };
+            visit_stmt_uses(stmt, &mut bump);
+            // Call argument registers are reads too; counting them keeps
+            // single-use inlining decisions correct.
+            if let Some(args) = call_args(stmt) {
+                args.iter().for_each(&mut bump);
+            }
         }
     }
     uses
@@ -191,6 +198,16 @@ fn visit_expr_uses(e: &SsaExpr, f: &mut dyn FnMut(&SsaVal)) {
         }
         SsaExpr::Un(_, v) => f(v),
         SsaExpr::Load { addr, .. } => f(addr),
+    }
+}
+
+/// The argument-register reads of a call statement, if any.
+fn call_args(stmt: &SsaStmt) -> Option<&[SsaVal]> {
+    match stmt {
+        SsaStmt::Call { args, .. }
+        | SsaStmt::CallIndirect { args, .. }
+        | SsaStmt::SysCall { args, .. } => Some(args),
+        _ => None,
     }
 }
 
@@ -275,6 +292,7 @@ fn lower_block(
     uses: &Uses,
     stack: &crate::vars::StackMap,
     name_of: &dyn Fn(u64) -> Option<String>,
+    arity_of: &dyn Fn(u64) -> usize,
 ) -> LowBlock {
     let mut low = Lowerer { inlinable: HashMap::new(), stack };
     let mut body = Vec::new();
@@ -321,12 +339,16 @@ fn lower_block(
                     });
                 }
             }
-            SsaStmt::Call { target, .. } => {
+            SsaStmt::Call { target, args, .. } => {
                 let name = name_of(*target).unwrap_or_else(|| format!("fn_{target:x}"));
-                body.push(HStmt::Call { name });
+                let n = arity_of(*target).min(args.len());
+                let args = args[..n].iter().map(|v| low.val(*v)).collect();
+                body.push(HStmt::Call { name, args });
             }
-            SsaStmt::CallIndirect { addr, .. } => {
-                body.push(HStmt::CallIndirect(low.val(*addr)))
+            SsaStmt::CallIndirect { addr, args, .. } => {
+                // Arity of an indirect callee is unknown; show no arguments.
+                body.push(HStmt::CallIndirect { target: low.val(*addr), args: Vec::new() });
+                let _ = args;
             }
             SsaStmt::SysCall { .. } => body.push(HStmt::SysCall),
             _ => {}

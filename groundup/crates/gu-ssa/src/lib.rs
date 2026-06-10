@@ -67,16 +67,18 @@ pub enum SsaStmt {
     Store { addr: SsaVal, val: SsaVal, size: u8 },
     Jump { target: u64 },
     CondJump { op: CmpOp, lhs: SsaVal, rhs: SsaVal, target: u64 },
-    /// A call. `defs` are the caller-saved registers it redefines with
-    /// fresh versions — modeling "the call produces unknown values here" so
-    /// nothing propagates stale state across it.
-    Call { target: u64, defs: Vec<SsaVal> },
-    CallIndirect { addr: SsaVal, defs: Vec<SsaVal> },
+    /// A call. `args` are the argument registers (a0-a7) read at the call
+    /// site — modeling that the call consumes them, so the code producing
+    /// them stays live. `defs` are the caller-saved registers it redefines
+    /// with fresh versions — modeling "the call produces unknown values
+    /// here" so nothing propagates stale state across it.
+    Call { target: u64, args: Vec<SsaVal>, defs: Vec<SsaVal> },
+    CallIndirect { addr: SsaVal, args: Vec<SsaVal>, defs: Vec<SsaVal> },
     JumpIndirect { addr: SsaVal },
     /// `live_out` are the ABI return-value registers (a0, a1) at this point,
     /// modeling that the caller reads them — so their definitions are live.
     Return { live_out: Vec<SsaVal> },
-    SysCall { defs: Vec<SsaVal> },
+    SysCall { args: Vec<SsaVal>, defs: Vec<SsaVal> },
     Break,
     Nop,
 }
@@ -161,10 +163,10 @@ fn fmt_stmt(s: &SsaStmt, names: &dyn RegNamer) -> String {
             cmp_sym(*op),
             fmt_val(*rhs, names)
         ),
-        SsaStmt::Call { target, defs } => {
+        SsaStmt::Call { target, defs, .. } => {
             format!("call {target:#x}{}", fmt_defs(defs, names))
         }
-        SsaStmt::CallIndirect { addr, defs } => {
+        SsaStmt::CallIndirect { addr, defs, .. } => {
             format!("call [{}]{}", fmt_val(*addr, names), fmt_defs(defs, names))
         }
         SsaStmt::JumpIndirect { addr } => format!("goto [{}]", fmt_val(*addr, names)),
@@ -176,7 +178,7 @@ fn fmt_stmt(s: &SsaStmt, names: &dyn RegNamer) -> String {
                 format!("return {}", v.join(", "))
             }
         }
-        SsaStmt::SysCall { defs } => format!("syscall{}", fmt_defs(defs, names)),
+        SsaStmt::SysCall { defs, .. } => format!("syscall{}", fmt_defs(defs, names)),
         SsaStmt::Break => "breakpoint".to_string(),
         SsaStmt::Nop => "nop".to_string(),
     }
@@ -246,3 +248,7 @@ pub(crate) const CALL_CLOBBERS: &[u16] =
 
 /// ABI return-value registers: a0, a1.
 pub(crate) const RET_REGS: &[u16] = &[10, 11];
+
+/// ABI argument registers: a0-a7, in order. A call reads these; how many
+/// are real arguments is decided later by interprocedural arity analysis.
+pub(crate) const ARG_REGS: &[u16] = &[10, 11, 12, 13, 14, 15, 16, 17];

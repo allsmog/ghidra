@@ -2,7 +2,9 @@
 //! dominator-tree renaming (the classic Cytron et al. algorithm).
 
 use crate::dom::Cfg;
-use crate::{Phi, SsaBlock, SsaExpr, SsaProgram, SsaStmt, SsaVal, CALL_CLOBBERS, RET_REGS};
+use crate::{
+    Phi, SsaBlock, SsaExpr, SsaProgram, SsaStmt, SsaVal, ARG_REGS, CALL_CLOBBERS, RET_REGS,
+};
 use gu_ir::{Expr, LiftedFn, Stmt, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -154,6 +156,12 @@ impl Renamer<'_> {
         }
     }
 
+    /// Argument registers read at a call, captured at their current
+    /// versions *before* the call's clobber defs bump them.
+    fn call_args(&self) -> Vec<SsaVal> {
+        ARG_REGS.iter().map(|&r| SsaVal::Reg(r, self.cur(r))).collect()
+    }
+
     fn call_defs(&mut self, pushed: &mut Vec<u16>) -> Vec<SsaVal> {
         CALL_CLOBBERS
             .iter()
@@ -201,17 +209,22 @@ impl Renamer<'_> {
                     target: *target,
                 },
                 Stmt::Call { target } => {
-                    SsaStmt::Call { target: *target, defs: self.call_defs(&mut pushed) }
+                    let args = self.call_args(); // read args before clobbering
+                    SsaStmt::Call { target: *target, args, defs: self.call_defs(&mut pushed) }
                 }
                 Stmt::CallIndirect { addr } => {
                     let addr = self.val(*addr); // use before clobber defs
-                    SsaStmt::CallIndirect { addr, defs: self.call_defs(&mut pushed) }
+                    let args = self.call_args();
+                    SsaStmt::CallIndirect { addr, args, defs: self.call_defs(&mut pushed) }
                 }
                 Stmt::JumpIndirect { addr } => SsaStmt::JumpIndirect { addr: self.val(*addr) },
                 Stmt::Return => SsaStmt::Return {
                     live_out: RET_REGS.iter().map(|&r| SsaVal::Reg(r, self.cur(r))).collect(),
                 },
-                Stmt::SysCall => SsaStmt::SysCall { defs: self.call_defs(&mut pushed) },
+                Stmt::SysCall => {
+                    let args = self.call_args();
+                    SsaStmt::SysCall { args, defs: self.call_defs(&mut pushed) }
+                }
                 Stmt::Break => SsaStmt::Break,
                 Stmt::Nop => SsaStmt::Nop,
             };

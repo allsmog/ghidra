@@ -8,7 +8,7 @@ fn decompile(words: &[u32]) -> String {
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
     let lifted = lift_function("f", &decode_all(0, &bytes));
     let ssa = optimize(&build(&lifted));
-    gu_decompile::decompile(&ssa, &|_| None)
+    gu_decompile::decompile(&ssa, &|_| None, &|_| 0)
 }
 
 const SUM_TO_N: [u32; 8] = [
@@ -113,5 +113,5 @@ fn recovers_stack_local() {
 fn empty_function_does_not_panic() {
     let lifted = lift_function("empty", &[]);
     let ssa = optimize(&build(&lifted));
-    let _ = gu_decompile::decompile(&ssa, &|_| None);
+    let _ = gu_decompile::decompile(&ssa, &|_| None, &|_| 0);
 }

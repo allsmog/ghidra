@@ -110,37 +110,69 @@ impl Signature {
     }
 }
 
-/// Recovers a function signature from SSA register usage.
-pub fn signature(prog: &SsaProgram) -> Signature {
-    // Parameters are argument registers read live-in (version 0). Crucially
-    // this scan excludes a return's `live_out`: the conservative ABI model
-    // lists a1 there even when the function doesn't take or return it, and
-    // counting that would invent phantom parameters.
-    let mut live_in_args: BTreeSet<u16> = BTreeSet::new();
+/// The number of leading argument registers (a0, a0-a1, ...) a function
+/// reads live-in, given how many arguments each callee takes. A call to a
+/// function of arity `k` reads the call site's first `k` argument values;
+/// when one of those is an unmodified incoming argument, it makes that
+/// register a parameter of the *caller* too. Used by the kernel's
+/// interprocedural arity fixpoint.
+pub fn arg_count(prog: &SsaProgram, callee_arity: &dyn Fn(u64) -> usize) -> usize {
+    let mut read = [false; 8];
+    let mut note = |v: &SsaVal| {
+        if let SsaVal::Reg(r, 0) = v {
+            if let Some(i) = arg_index(*r) {
+                read[i] = true;
+            }
+        }
+    };
     for block in &prog.blocks {
         for (_, stmt) in &block.stmts {
-            visit_reads_excluding_return(stmt, &mut |v| {
-                if let SsaVal::Reg(r, 0) = v {
-                    if ARG_REGS.contains(r) {
-                        live_in_args.insert(*r);
-                    }
+            // Ordinary reads, excluding a return's conservative live-out.
+            if !matches!(stmt, SsaStmt::Return { .. }) {
+                non_call_reads(stmt, &mut note);
+            }
+            // A call reads only as many arguments as its callee takes.
+            if let Some((args, target)) = call_args(stmt) {
+                let arity = target.map_or(args.len(), callee_arity);
+                for v in args.iter().take(arity) {
+                    note(v);
                 }
-            });
+            }
         }
     }
+    // Parameters are a contiguous prefix a0..a_{k-1}; arity is the highest
+    // index read, plus one.
+    read.iter().rposition(|&b| b).map_or(0, |i| i + 1)
+}
 
-    // With the parameter set known, decide whether any return yields a value.
+/// Recovers a function signature, given callee arities for resolving how
+/// many arguments each call consumes.
+pub fn signature(prog: &SsaProgram, callee_arity: &dyn Fn(u64) -> usize) -> Signature {
+    let arity = arg_count(prog, callee_arity);
+    let params: Vec<String> =
+        ARG_REGS.clone().take(arity).map(|r| Rv64Namer.reg_name(r).to_string()).collect();
+    let param_set: BTreeSet<u16> = ARG_REGS.clone().take(arity).collect();
+
     let returns_value = prog.blocks.iter().flat_map(|b| &b.stmts).any(|(_, stmt)| {
         matches!(stmt, SsaStmt::Return { live_out }
-            if live_out.first().is_some_and(|v| produces_value(*v, &live_in_args)))
+            if live_out.first().is_some_and(|v| produces_value(*v, &param_set)))
     });
 
-    let params = live_in_args
-        .iter()
-        .map(|&r| Rv64Namer.reg_name(r).to_string())
-        .collect::<Vec<_>>();
-
     Signature { params, returns_value }
+}
+
+/// Argument-register index (a0 -> 0, ... a7 -> 7), if `r` is one.
+fn arg_index(r: u16) -> Option<usize> {
+    ARG_REGS.contains(&r).then(|| (r - 10) as usize)
+}
+
+/// The argument list and direct-call target (if direct) of a call statement.
+fn call_args(stmt: &SsaStmt) -> Option<(&[SsaVal], Option<u64>)> {
+    match stmt {
+        SsaStmt::Call { args, target, .. } => Some((args, Some(*target))),
+        SsaStmt::CallIndirect { args, .. } | SsaStmt::SysCall { args, .. } => Some((args, None)),
+        _ => None,
+    }
 }
 
 /// Whether a return's first live-out value is a real result the caller would
@@ -153,18 +185,10 @@ fn produces_value(v: SsaVal, params: &BTreeSet<u16>) -> bool {
     }
 }
 
-/// Visits the register/temp reads of a statement, but treats `Return`'s
-/// live-out as not-a-read (it is the function's result, not an input).
-fn visit_reads_excluding_return(stmt: &SsaStmt, f: &mut dyn FnMut(&SsaVal)) {
-    if matches!(stmt, SsaStmt::Return { .. }) {
-        return;
-    }
-    super_visit_uses(stmt, f);
-}
-
-/// Visits the SSA-value *uses* (reads) of a statement — shared with
-/// `hir`'s use scan but kept local to avoid a cross-module dependency.
-fn super_visit_uses(stmt: &SsaStmt, f: &mut dyn FnMut(&SsaVal)) {
+/// Visits the register/temp reads of a *non-call* statement. Call argument
+/// reads are handled separately (trimmed to callee arity), so they are
+/// deliberately excluded here.
+fn non_call_reads(stmt: &SsaStmt, f: &mut dyn FnMut(&SsaVal)) {
     let expr = |e: &SsaExpr, f: &mut dyn FnMut(&SsaVal)| match e {
         SsaExpr::Val(v) => f(v),
         SsaExpr::Bin(_, a, b) => {
@@ -184,9 +208,8 @@ fn super_visit_uses(stmt: &SsaStmt, f: &mut dyn FnMut(&SsaVal)) {
             f(lhs);
             f(rhs);
         }
-        SsaStmt::CallIndirect { addr, .. } => f(addr),
         SsaStmt::JumpIndirect { addr } => f(addr),
-        SsaStmt::Return { live_out } => live_out.iter().for_each(f),
+        // Calls (args), returns (live-out), jumps: handled by callers.
         _ => {}
     }
 }

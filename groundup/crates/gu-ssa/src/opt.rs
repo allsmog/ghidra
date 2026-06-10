@@ -110,7 +110,7 @@ fn constant_values(prog: &SsaProgram) -> HashMap<Key, Lat> {
                 }
                 SsaStmt::Call { defs, .. }
                 | SsaStmt::CallIndirect { defs, .. }
-                | SsaStmt::SysCall { defs } => {
+                | SsaStmt::SysCall { defs, .. } => {
                     for d in defs {
                         if let Some(k) = d.key() {
                             vals.insert(k, Lat::Bottom);
@@ -212,9 +212,20 @@ fn rewrite_stmt(stmt: &SsaStmt, vals: &HashMap<Key, Lat>) -> SsaStmt {
             rhs: subst(*rhs, vals),
             target: *target,
         },
-        SsaStmt::CallIndirect { addr, defs } => {
-            SsaStmt::CallIndirect { addr: subst(*addr, vals), defs: defs.clone() }
-        }
+        SsaStmt::Call { target, args, defs } => SsaStmt::Call {
+            target: *target,
+            args: args.iter().map(|v| subst(*v, vals)).collect(),
+            defs: defs.clone(),
+        },
+        SsaStmt::CallIndirect { addr, args, defs } => SsaStmt::CallIndirect {
+            addr: subst(*addr, vals),
+            args: args.iter().map(|v| subst(*v, vals)).collect(),
+            defs: defs.clone(),
+        },
+        SsaStmt::SysCall { args, defs } => SsaStmt::SysCall {
+            args: args.iter().map(|v| subst(*v, vals)).collect(),
+            defs: defs.clone(),
+        },
         SsaStmt::JumpIndirect { addr } => SsaStmt::JumpIndirect { addr: subst(*addr, vals) },
         SsaStmt::Return { live_out } => {
             SsaStmt::Return { live_out: live_out.iter().map(|v| subst(*v, vals)).collect() }
@@ -255,14 +266,19 @@ fn effect_uses(stmt: &SsaStmt) -> Option<Vec<Key>> {
             push(*lhs);
             push(*rhs);
         }
-        SsaStmt::CallIndirect { addr, .. } | SsaStmt::JumpIndirect { addr } => push(*addr),
-        SsaStmt::Return { live_out } => {
-            for v in live_out {
-                push(*v);
-            }
+        SsaStmt::JumpIndirect { addr } => push(*addr),
+        SsaStmt::Return { live_out } => live_out.iter().for_each(|v| push(*v)),
+        // A call reads its argument registers and (if indirect) its target.
+        // Seeding all of them keeps argument-producing code live; how many
+        // are real arguments is decided later by arity analysis.
+        SsaStmt::Call { args, .. } | SsaStmt::SysCall { args, .. } => {
+            args.iter().for_each(|v| push(*v))
         }
-        // Direct calls, jumps, syscalls, breaks: effectful, but their
-        // register operands are implicit (ABI), not SSA operands.
+        SsaStmt::CallIndirect { addr, args, .. } => {
+            push(*addr);
+            args.iter().for_each(|v| push(*v));
+        }
+        // Jumps and breaks have no SSA operands.
         _ => {}
     }
     Some(uses)

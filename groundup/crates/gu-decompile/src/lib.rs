@@ -27,12 +27,23 @@ mod vars;
 use gu_ssa::SsaProgram;
 
 pub use hir::{HExpr, HStmt};
-pub use vars::Signature;
+pub use vars::{arg_count, Signature};
 
 /// Decompiles an (ideally already optimized) SSA program to pseudo-C text.
 /// `name_of` resolves a call target address to a function name, if known.
-pub fn decompile(prog: &SsaProgram, name_of: &dyn Fn(u64) -> Option<String>) -> String {
-    let sig = vars::signature(prog);
+/// Decompiles an (ideally already optimized) SSA program to pseudo-C text.
+///
+/// - `name_of` resolves a call target address to a function name.
+/// - `arity_of` resolves a call target to its parameter count, so call sites
+///   render the right number of arguments and the function's own signature
+///   accounts for arguments forwarded to callees. The kernel supplies this
+///   from an interprocedural arity fixpoint; pass `|_| 0` for none.
+pub fn decompile(
+    prog: &SsaProgram,
+    name_of: &dyn Fn(u64) -> Option<String>,
+    arity_of: &dyn Fn(u64) -> usize,
+) -> String {
+    let sig = vars::signature(prog, arity_of);
     if prog.blocks.is_empty() {
         return emit::emit(&prog.name, prog.entry, &sig, &[], &[]);
     }
@@ -41,7 +52,7 @@ pub fn decompile(prog: &SsaProgram, name_of: &dyn Fn(u64) -> Option<String>) -> 
         vars::used_slots(prog, &stack).into_iter().map(vars::local_name).collect();
 
     let analysis = cfg::Analysis::new(prog);
-    let bodies = hir::lower_blocks(prog, &stack, name_of);
+    let bodies = hir::lower_blocks(prog, &stack, name_of, arity_of);
     let structured = structure::structure(prog, &analysis, &bodies);
     emit::emit(&prog.name, prog.entry, &sig, &locals, &structured)
 }

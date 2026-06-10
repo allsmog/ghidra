@@ -71,6 +71,19 @@ long stash(long a0) {
 }
 ```
 
+Call arguments are recovered interprocedurally. In the stripped `calls`
+binary, an arity fixpoint over the call graph lets `alpha` forward a
+computed argument to `beta`, so both take `a0`:
+
+```c
+long fn_11134(long a0) {        // alpha
+    long local_8;
+    local_8 = ra;
+    fn_11150((a0 + 1));         // calls beta with a0 + 1
+    return a0;
+}
+```
+
 The `demo` command shows the incremental engine: it warms the cache, renames
 a function, and shows in the query log that only listings displaying that
 name re-render — decoding, lifting, and unrelated listings are reused.

@@ -43,6 +43,26 @@ fn stripped_binary_discovers_functions_from_entry() {
 }
 
 #[test]
+fn interprocedural_arity_threads_arguments_through_the_call_graph() {
+    let mut k = Kernel::new(CALLS_STRIPPED.to_vec());
+
+    // beta is a leaf taking one argument.
+    let beta = k.decompile(0x11150).unwrap();
+    assert!(beta.contains("(long a0)"), "beta should take a0:\n{beta}");
+
+    // alpha forwards a computed argument to beta, so alpha takes a0 too and
+    // the call site shows the forwarded expression.
+    let alpha = k.decompile(0x11134).unwrap();
+    assert!(alpha.contains("fn_11134(long a0)"), "alpha should take a0:\n{alpha}");
+    assert!(alpha.contains("fn_11150((a0 + 1))"), "argument not forwarded:\n{alpha}");
+
+    // _start passes a constant to alpha and takes no arguments itself.
+    let start = k.decompile(0x11120).unwrap();
+    assert!(start.contains("fn_11120(void)"), "_start takes no args:\n{start}");
+    assert!(start.contains("fn_11134(5)"), "constant arg not passed:\n{start}");
+}
+
+#[test]
 fn renames_work_on_discovered_functions() {
     let mut k = Kernel::new(CALLS_STRIPPED.to_vec());
     k.functions().unwrap();

@@ -72,11 +72,11 @@ fn emit_block(stmts: &[HStmt], level: usize, targeted: &HashSet<u64>, out: &mut 
                     fmt_expr(val)
                 );
             }
-            HStmt::Call { name } => {
-                let _ = writeln!(out, "{pad}{name}();");
+            HStmt::Call { name, args } => {
+                let _ = writeln!(out, "{pad}{name}({});", fmt_args(args));
             }
-            HStmt::CallIndirect(e) => {
-                let _ = writeln!(out, "{pad}(*{})();", fmt_expr(e));
+            HStmt::CallIndirect { target, args } => {
+                let _ = writeln!(out, "{pad}(*{})({});", fmt_expr(target), fmt_args(args));
             }
             HStmt::SysCall => {
                 let _ = writeln!(out, "{pad}syscall();");
@@ -115,6 +115,10 @@ fn emit_block(stmts: &[HStmt], level: usize, targeted: &HashSet<u64>, out: &mut 
             }
         }
     }
+}
+
+fn fmt_args(args: &[HExpr]) -> String {
+    args.iter().map(fmt_expr).collect::<Vec<_>>().join(", ")
 }
 
 fn c_type(size: u8) -> &'static str {
