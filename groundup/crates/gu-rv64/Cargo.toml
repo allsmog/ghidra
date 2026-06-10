@@ -1,0 +1,9 @@
+[package]
+name = "gu-rv64"
+description = "RV64IM decoder and lifter to gu-ir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gu-ir = { path = "../gu-ir" }

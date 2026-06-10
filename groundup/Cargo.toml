@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gu-elf",
+    "crates/gu-ir",
+    "crates/gu-rv64",
+    "crates/gu-kernel",
+    "crates/gu-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"

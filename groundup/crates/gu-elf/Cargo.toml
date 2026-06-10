@@ -1,0 +1,8 @@
+[package]
+name = "gu-elf"
+description = "Zero-dependency, panic-free ELF64 parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
