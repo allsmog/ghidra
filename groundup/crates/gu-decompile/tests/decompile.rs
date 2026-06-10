@@ -169,6 +169,38 @@ fn byte_array_index_uses_unit_stride() {
     assert!(c.contains("a0[t1]"), "byte array index not recovered:\n{c}");
 }
 
+/// pair_sum(ptr): reads ptr->a (off 0), ptr->b (off 8), writes ptr->sum
+/// (off 16), returns it. A pointer dereferenced at several constant offsets.
+const PAIR_SUM: [u32; 6] = [
+    0x00053283, // ld t0, 0(a0)
+    0x00853303, // ld t1, 8(a0)
+    0x006283b3, // add t2, t0, t1
+    0x00753823, // sd t2, 16(a0)
+    0x01053503, // ld a0, 16(a0)
+    0x00008067, // ret
+];
+
+#[test]
+fn constant_offsets_become_struct_fields() {
+    let c = decompile(&PAIR_SUM);
+    // Each distinct constant offset is a named field.
+    assert!(c.contains("a0->field_0"), "field at offset 0 missing:\n{c}");
+    assert!(c.contains("a0->field_8"), "field at offset 8 missing:\n{c}");
+    assert!(c.contains("a0->field_10"), "field at offset 16 missing:\n{c}");
+    // The store is rendered as a field assignment, not a raw deref.
+    assert!(c.contains("a0->field_10 = "), "struct store not recovered:\n{c}");
+    assert!(!c.contains("*(int64_t*)"), "raw deref remains:\n{c}");
+}
+
+#[test]
+fn scalar_pointer_is_not_treated_as_struct() {
+    // word_sum only ever indexes a0 (no constant offset), so it must use
+    // array syntax, never field syntax.
+    let c = decompile(&WORD_SUM);
+    assert!(!c.contains("->field"), "array pointer mistaken for struct:\n{c}");
+    assert!(c.contains("a0[t1]"), "{c}");
+}
+
 #[test]
 fn pointer_reuse_does_not_pollute_parameter_type() {
     // sum_to_n returns via a0 (reused as the result holder) but takes a0 as a

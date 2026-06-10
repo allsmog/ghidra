@@ -4,7 +4,7 @@
 use gu_ir::{BinOp, CmpOp, RegNamer, UnOp};
 use gu_rv64::Rv64Namer;
 use gu_ssa::{Key, SsaBlock, SsaExpr, SsaProgram, SsaStmt, SsaVal};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HExpr {
@@ -18,6 +18,9 @@ pub enum HExpr {
     Index(Box<HExpr>, Box<HExpr>),
     /// `*base` — a load through a typed pointer at offset zero.
     Deref(Box<HExpr>),
+    /// `base->field_<off>` — a load through a pointer at a constant offset
+    /// into a recovered struct.
+    Field(Box<HExpr>, i64),
 }
 
 impl HExpr {
@@ -98,6 +101,8 @@ pub enum HStmt {
     While { cond: HExpr, body: Vec<HStmt> },
     Return(Option<HExpr>),
     IndirectJump(HExpr),
+    /// `place = val;` where `place` is a recovered lvalue (field/index/deref).
+    SetPlace { place: HExpr, val: HExpr },
     Goto(u64),
     Label(u64),
     Break,
@@ -378,57 +383,109 @@ fn lower_block(
     LowBlock { body, term }
 }
 
-/// Rewrites memory dereferences into array indexing or pointer deref where
-/// the base is a typed pointer. `pointee_size` gives the size in bytes of
-/// what a named pointer variable points to, if it is a pointer.
+/// Information the access-recovery pass needs about pointer variables.
+pub struct PtrInfo<'a> {
+    /// Pointee size in bytes of a pointer variable, if it is a pointer.
+    pub pointee_size: &'a dyn Fn(&str) -> Option<u8>,
+}
+
+/// Rewrites memory dereferences into struct fields, array indexing, or
+/// pointer derefs, using recovered pointer types.
 ///
+/// - `*(T*)(base + const)` where `base` is dereferenced at several distinct
+///   offsets  ->  `base->field_<off>` (struct)
 /// - `*(T*)(base + index*size)` with `size` the pointee size -> `base[index]`
-/// - `*(T*)(base)` where `base` is a pointer            -> `*base`
-pub fn simplify_array_accesses(
-    stmts: &mut [HStmt],
-    pointee_size: &dyn Fn(&str) -> Option<u8>,
-) {
+/// - `*(T*)(base)` where `base` is a plain pointer           -> `*base`
+pub fn simplify_accesses(stmts: &mut [HStmt], info: &PtrInfo) {
+    // Phase 1: which pointers are accessed at a non-zero constant offset?
+    // Those are structs; collect their bases.
+    let mut struct_bases: HashSet<String> = HashSet::new();
+    collect_struct_bases(stmts, info, &mut struct_bases);
+    // Phase 2: rewrite loads and stores into the recovered lvalues.
+    rewrite_stmts(stmts, info, &struct_bases);
+}
+
+/// The constant offset of `addr` from a pointer base `(base_name, offset)`:
+/// `base` itself is offset 0, `base + k` is offset `k`.
+fn const_offset(addr: &HExpr) -> Option<(&str, i64)> {
+    match addr {
+        HExpr::Var(name) => Some((name, 0)),
+        HExpr::Bin(BinOp::Add, base, off) => match (base.as_ref(), off.as_ref()) {
+            (HExpr::Var(name), HExpr::Const(k)) => Some((name, *k)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Records a struct base if `addr` is a non-zero constant offset into a
+/// pointer.
+fn note_struct_base(addr: &HExpr, info: &PtrInfo, out: &mut HashSet<String>) {
+    if let Some((name, off)) = const_offset(addr) {
+        if off != 0 && (info.pointee_size)(name).is_some() {
+            out.insert(name.to_string());
+        }
+    }
+}
+
+fn walk_expr_for_structs(e: &HExpr, info: &PtrInfo, out: &mut HashSet<String>) {
+    match e {
+        HExpr::Load { addr, .. } => {
+            note_struct_base(addr, info, out);
+            walk_expr_for_structs(addr, info, out);
+        }
+        HExpr::Bin(_, a, b) | HExpr::Cmp(_, a, b) | HExpr::Index(a, b) => {
+            walk_expr_for_structs(a, info, out);
+            walk_expr_for_structs(b, info, out);
+        }
+        HExpr::Un(_, v) | HExpr::Deref(v) | HExpr::Field(v, _) => {
+            walk_expr_for_structs(v, info, out)
+        }
+        HExpr::Var(_) | HExpr::Const(_) => {}
+    }
+}
+
+fn collect_struct_bases(stmts: &[HStmt], info: &PtrInfo, out: &mut HashSet<String>) {
     for stmt in stmts {
+        for_each_expr(stmt, &mut |e| walk_expr_for_structs(e, info, out));
+        if let HStmt::Store { addr, .. } = stmt {
+            note_struct_base(addr, info, out);
+        }
         match stmt {
-            HStmt::Assign(_, e) | HStmt::Return(Some(e)) | HStmt::IndirectJump(e) => {
-                rewrite_expr(e, pointee_size)
+            HStmt::If { then_body, else_body, .. } => {
+                collect_struct_bases(then_body, info, out);
+                collect_struct_bases(else_body, info, out);
             }
-            HStmt::Store { addr, val, .. } => {
-                rewrite_expr(addr, pointee_size);
-                rewrite_expr(val, pointee_size);
-            }
-            HStmt::Call { args, .. } => {
-                args.iter_mut().for_each(|a| rewrite_expr(a, pointee_size))
-            }
-            HStmt::CallIndirect { target, args } => {
-                rewrite_expr(target, pointee_size);
-                args.iter_mut().for_each(|a| rewrite_expr(a, pointee_size));
-            }
-            HStmt::If { cond, then_body, else_body } => {
-                rewrite_expr(cond, pointee_size);
-                simplify_array_accesses(then_body, pointee_size);
-                simplify_array_accesses(else_body, pointee_size);
-            }
-            HStmt::While { cond, body } => {
-                rewrite_expr(cond, pointee_size);
-                simplify_array_accesses(body, pointee_size);
-            }
+            HStmt::While { body, .. } => collect_struct_bases(body, info, out),
             _ => {}
         }
     }
 }
 
-/// The pointer variable name and pointee size of an expression, if it names
-/// a pointer.
-fn as_pointer(e: &HExpr, pointee_size: &dyn Fn(&str) -> Option<u8>) -> Option<u8> {
-    match e {
-        HExpr::Var(name) => pointee_size(name),
-        _ => None,
+/// Applies `f` to each top-level expression of a statement (not recursing
+/// into nested statement bodies).
+fn for_each_expr(stmt: &HStmt, f: &mut dyn FnMut(&HExpr)) {
+    match stmt {
+        HStmt::Assign(_, e) | HStmt::Return(Some(e)) | HStmt::IndirectJump(e) => f(e),
+        HStmt::Store { addr, val, .. } => {
+            f(addr);
+            f(val);
+        }
+        HStmt::SetPlace { place, val } => {
+            f(place);
+            f(val);
+        }
+        HStmt::Call { args, .. } => args.iter().for_each(f),
+        HStmt::CallIndirect { target, args } => {
+            f(target);
+            args.iter().for_each(f);
+        }
+        HStmt::If { cond, .. } | HStmt::While { cond, .. } => f(cond),
+        _ => {}
     }
 }
 
-/// The index expression of `index * stride`, if `e` scales by `stride`
-/// (either `index << log2(stride)` or `index * stride`).
+/// The index expression of `index * stride`, if `e` scales by `stride`.
 fn scaled_index(e: &HExpr, stride: u8) -> Option<HExpr> {
     match e {
         HExpr::Bin(BinOp::Shl, idx, shift) => match **shift {
@@ -439,44 +496,95 @@ fn scaled_index(e: &HExpr, stride: u8) -> Option<HExpr> {
             HExpr::Const(s) if s == stride as i64 => Some((**idx).clone()),
             _ => None,
         },
-        // stride 1: the index is itself the offset.
         _ if stride == 1 => Some(e.clone()),
         _ => None,
     }
 }
 
-fn rewrite_expr(e: &mut HExpr, pointee_size: &dyn Fn(&str) -> Option<u8>) {
-    // Recurse first so nested loads are handled.
-    match e {
-        HExpr::Bin(_, a, b) | HExpr::Cmp(_, a, b) | HExpr::Index(a, b) => {
-            rewrite_expr(a, pointee_size);
-            rewrite_expr(b, pointee_size);
+/// Builds the lvalue an address denotes: a struct field, an array element,
+/// or a plain deref. `size` is the access width.
+fn as_place(
+    addr: &HExpr,
+    size: u8,
+    info: &PtrInfo,
+    structs: &HashSet<String>,
+) -> Option<HExpr> {
+    // Struct field: a constant offset into a known struct base.
+    if let Some((name, off)) = const_offset(addr) {
+        if structs.contains(name) {
+            return Some(HExpr::Field(Box::new(HExpr::Var(name.to_string())), off));
         }
-        HExpr::Un(_, v) | HExpr::Deref(v) => rewrite_expr(v, pointee_size),
-        HExpr::Load { addr, .. } => rewrite_expr(addr, pointee_size),
-        HExpr::Var(_) | HExpr::Const(_) => {}
     }
-
-    let HExpr::Load { addr, size, .. } = e else { return };
-    let size = *size;
-    let replacement = match addr.as_ref() {
+    let is_ptr = |e: &HExpr| matches!(e, HExpr::Var(n) if (info.pointee_size)(n) == Some(size));
+    match addr {
         // base + index*size  ->  base[index]
-        HExpr::Bin(BinOp::Add, base, offset) => {
-            match (as_pointer(base, pointee_size), scaled_index(offset, size)) {
-                (Some(psize), Some(idx)) if psize == size => {
-                    Some(HExpr::Index(base.clone(), Box::new(idx)))
-                }
-                _ => None,
+        HExpr::Bin(BinOp::Add, base, offset) if is_ptr(base) => {
+            scaled_index(offset, size).map(|idx| HExpr::Index(base.clone(), Box::new(idx)))
+        }
+        // bare pointer  ->  *base
+        base if is_ptr(base) => Some(HExpr::Deref(Box::new(base.clone()))),
+        _ => None,
+    }
+}
+
+fn rewrite_stmts(stmts: &mut [HStmt], info: &PtrInfo, structs: &HashSet<String>) {
+    for stmt in stmts.iter_mut() {
+        // Convert a recognized store into a place-assignment.
+        if let HStmt::Store { addr, val, size } = stmt {
+            if let Some(place) = as_place(addr, *size, info, structs) {
+                let mut val = std::mem::replace(val, HExpr::Const(0));
+                rewrite_expr(&mut val, info, structs);
+                *stmt = HStmt::SetPlace { place, val };
+                continue;
             }
         }
-        // bare typed pointer  ->  *base
-        base @ HExpr::Var(_) => as_pointer(base, pointee_size)
-            .filter(|&psize| psize == size)
-            .map(|_| HExpr::Deref(Box::new(base.clone()))),
-        _ => None,
-    };
-    if let Some(r) = replacement {
-        *e = r;
+        match stmt {
+            HStmt::Assign(_, e) | HStmt::Return(Some(e)) | HStmt::IndirectJump(e) => {
+                rewrite_expr(e, info, structs)
+            }
+            HStmt::SetPlace { place, val } => {
+                rewrite_expr(place, info, structs);
+                rewrite_expr(val, info, structs);
+            }
+            HStmt::Store { addr, val, .. } => {
+                rewrite_expr(addr, info, structs);
+                rewrite_expr(val, info, structs);
+            }
+            HStmt::Call { args, .. } => {
+                args.iter_mut().for_each(|a| rewrite_expr(a, info, structs))
+            }
+            HStmt::CallIndirect { target, args } => {
+                rewrite_expr(target, info, structs);
+                args.iter_mut().for_each(|a| rewrite_expr(a, info, structs));
+            }
+            HStmt::If { cond, then_body, else_body } => {
+                rewrite_expr(cond, info, structs);
+                rewrite_stmts(then_body, info, structs);
+                rewrite_stmts(else_body, info, structs);
+            }
+            HStmt::While { cond, body } => {
+                rewrite_expr(cond, info, structs);
+                rewrite_stmts(body, info, structs);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_expr(e: &mut HExpr, info: &PtrInfo, structs: &HashSet<String>) {
+    match e {
+        HExpr::Bin(_, a, b) | HExpr::Cmp(_, a, b) | HExpr::Index(a, b) => {
+            rewrite_expr(a, info, structs);
+            rewrite_expr(b, info, structs);
+        }
+        HExpr::Un(_, v) | HExpr::Deref(v) | HExpr::Field(v, _) => rewrite_expr(v, info, structs),
+        HExpr::Load { addr, .. } => rewrite_expr(addr, info, structs),
+        HExpr::Var(_) | HExpr::Const(_) => {}
+    }
+    if let HExpr::Load { addr, size, .. } = e {
+        if let Some(place) = as_place(addr, *size, info, structs) {
+            *e = place;
+        }
     }
 }
 

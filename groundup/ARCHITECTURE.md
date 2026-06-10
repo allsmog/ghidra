@@ -122,8 +122,12 @@ Roadmap, roughly in order:
    pollute them (`byte_sum`'s `a0` recovers as `unsigned char *`). *Array
    indexing is recovered* too: `base + index*stride` with `stride` equal to
    the pointee size renders as `base[index]` (`word_sum`'s `ptr + i*8`
-   becomes `a0[t1]`). Remaining: struct field layout (constant offsets),
-   nested arrays of structs, and signedness from comparison operators.
+   becomes `a0[t1]`). *Struct fields are recovered* too: a pointer
+   dereferenced at several distinct constant offsets is a struct, and each
+   offset becomes a field (`pair_sum`'s accesses at 0/8/16 become
+   `a0->field_0`/`field_8`/`field_10`, with stores as field assignments).
+   Remaining: named struct typedefs and field types, nested arrays of
+   structs, and signedness from comparison operators.
 8. **UI client** — listing/graph/decompiler views over the API.
 
 ## Influences

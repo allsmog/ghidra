@@ -62,8 +62,10 @@ pub fn decompile(
     let bodies = hir::lower_blocks(prog, &stack, name_of, arity_of);
     let mut structured = structure::structure(prog, &analysis, &bodies);
 
-    // Recognize array indexing / pointer deref now that types are known.
-    hir::simplify_array_accesses(&mut structured, &|name| types.pointee_size(name));
+    // Recognize struct fields / array indexing / pointer deref now that
+    // types are known.
+    let ptr_info = hir::PtrInfo { pointee_size: &|name| types.pointee_size(name) };
+    hir::simplify_accesses(&mut structured, &ptr_info);
 
     // Local declarations: stack slots, then register variables that appear
     // in the body and are neither parameters nor stack slots.

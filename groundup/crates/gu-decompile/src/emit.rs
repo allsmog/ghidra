@@ -61,7 +61,7 @@ pub fn referenced_vars(body: &[HStmt]) -> Vec<String> {
                 walk_expr(a, f);
                 walk_expr(b, f);
             }
-            HExpr::Un(_, v) | HExpr::Deref(v) => walk_expr(v, f),
+            HExpr::Un(_, v) | HExpr::Deref(v) | HExpr::Field(v, _) => walk_expr(v, f),
             HExpr::Load { addr, .. } => walk_expr(addr, f),
             HExpr::Const(_) => {}
         }
@@ -75,6 +75,10 @@ pub fn referenced_vars(body: &[HStmt]) -> Vec<String> {
                 }
                 HStmt::Store { addr, val, .. } => {
                     walk_expr(addr, f);
+                    walk_expr(val, f);
+                }
+                HStmt::SetPlace { place, val } => {
+                    walk_expr(place, f);
                     walk_expr(val, f);
                 }
                 HStmt::Call { args, .. } => args.iter().for_each(|a| walk_expr(a, f)),
@@ -141,6 +145,9 @@ fn emit_block(stmts: &[HStmt], level: usize, targeted: &HashSet<u64>, out: &mut 
                     fmt_expr(addr),
                     fmt_expr(val)
                 );
+            }
+            HStmt::SetPlace { place, val } => {
+                let _ = writeln!(out, "{pad}{} = {};", fmt_expr(place), fmt_expr(val));
             }
             HStmt::Call { name, args } => {
                 let _ = writeln!(out, "{pad}{name}({});", fmt_args(args));
@@ -226,6 +233,7 @@ fn fmt_expr(e: &HExpr) -> String {
         }
         HExpr::Index(base, idx) => format!("{}[{}]", fmt_expr(base), fmt_expr(idx)),
         HExpr::Deref(base) => format!("*{}", fmt_expr(base)),
+        HExpr::Field(base, off) => format!("{}->field_{off:x}", fmt_expr(base)),
     }
 }
 

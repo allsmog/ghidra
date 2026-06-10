@@ -36,6 +36,7 @@ cargo run -p gu-cli -- decompile fixtures/branch.o maxfn  # recovers an `if`/`el
 cargo run -p gu-cli -- decompile fixtures/locals.o stash  # recovers a stack local
 cargo run -p gu-cli -- decompile fixtures/types.o byte_sum # recovers pointer & byte types
 cargo run -p gu-cli -- decompile fixtures/array.o word_sum # recovers array indexing (a0[i])
+cargo run -p gu-cli -- decompile fixtures/struct.o pair_sum # recovers struct fields (a0->field_8)
 cargo run -p gu-cli -- demo   fixtures/sum.o # incremental recomputation demo
 
 # Stripped linked executable: no symbols, functions found by recursive
@@ -122,6 +123,22 @@ long word_sum(long *a0, long a1) {
 }
 ```
 
+A pointer dereferenced at several distinct constant offsets is a struct;
+each offset becomes a field, and stores become field assignments. In
+`pair_sum`, `a0` is touched at offsets 0, 8, and 16:
+
+```c
+long pair_sum(long *a0) {
+    long t0;
+    long t1;
+    t0 = a0->field_0;
+    t1 = a0->field_8;
+    a0->field_10 = (t0 + t1);
+    a0 = a0->field_10;
+    return a0;
+}
+```
+
 The `demo` command shows the incremental engine: it warms the cache, renames
 a function, and shows in the query log that only listings displaying that
 name re-render — decoding, lifting, and unrelated listings are reused.
@@ -136,6 +153,7 @@ llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o branch.o branch.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o locals.o locals.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o types.o types.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o array.o array.s
+llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o struct.o struct.s
 llvm-mc -triple=riscv64 -mattr=+m -filetype=obj -o calls.tmp.o calls.s
 ld.lld -e _start -o calls calls.tmp.o && rm calls.tmp.o
 llvm-objcopy --strip-all calls calls_stripped
