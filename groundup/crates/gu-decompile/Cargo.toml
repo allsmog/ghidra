@@ -1,0 +1,11 @@
+[package]
+name = "gu-decompile"
+description = "Structured pseudo-C decompiler over optimized SSA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gu-ir = { path = "../gu-ir" }
+gu-rv64 = { path = "../gu-rv64" }
+gu-ssa = { path = "../gu-ssa" }

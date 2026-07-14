@@ -1,0 +1,16 @@
+[package]
+name = "gu-cli"
+description = "Command-line client for the groundup kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gu"
+path = "src/main.rs"
+
+[dependencies]
+gu-elf = { path = "../gu-elf" }
+gu-ir = { path = "../gu-ir" }
+gu-rv64 = { path = "../gu-rv64" }
+gu-kernel = { path = "../gu-kernel" }
